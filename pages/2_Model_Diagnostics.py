@@ -104,6 +104,7 @@ try:
     
     merged['is_pre_holiday'] = 0
     for holiday_date in major_holidays.keys():
+        # Flag BOTH 1 day before AND 2 days before holiday (within 2 days)
         merged.loc[
             pd.to_datetime(merged['Date']).isin([holiday_date - pd.Timedelta(days=1), holiday_date - pd.Timedelta(days=2)]),
             'is_pre_holiday'
