@@ -78,6 +78,47 @@ try:
     merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
     merged['is_precipitation'] = (merged['Precip_Type'] != 'Clear').astype(int)
     
+    # Payday Effect: Flag days within 4 days after 15th and 30th/last day of month
+    merged['day_of_month'] = pd.to_datetime(merged['Date']).dt.day
+    merged['days_in_month'] = pd.to_datetime(merged['Date']).dt.days_in_month
+    merged['is_payday_effect'] = (
+        # 4 days after 15th (days 16-19)
+        ((merged['day_of_month'] >= 16) & (merged['day_of_month'] <= 19)) |
+        # 4 days after month end (days 1-4 of month OR last 4 days wrapping to next month)
+        ((merged['day_of_month'] >= 1) & (merged['day_of_month'] <= 4)) |
+        # Handle last day payday for months with 30/31 days (days 31, 1-4)
+        (merged['day_of_month'] >= merged['days_in_month'])
+    ).astype(int)
+    
+    # Holiday Effect: Flag 2 days before major holidays
+    # Define major holidays for 2025-2026
+    major_holidays = {
+        # 2025 Holidays
+        pd.Timestamp('2025-05-26'): 'Memorial Day',       # Last Monday in May
+        pd.Timestamp('2025-07-04'): 'July 4th',
+        pd.Timestamp('2025-09-01'): 'Labor Day',          # First Monday in Sept
+        pd.Timestamp('2025-11-27'): 'Thanksgiving',       # 4th Thursday in Nov
+        pd.Timestamp('2025-12-25'): 'Christmas',
+        pd.Timestamp('2025-04-20'): 'Easter',             # 2025 Easter
+        pd.Timestamp('2025-02-09'): 'Super Bowl',         # 2025 Super Bowl
+        # 2026 Holidays
+        pd.Timestamp('2026-05-25'): 'Memorial Day',
+        pd.Timestamp('2026-07-04'): 'July 4th',
+        pd.Timestamp('2026-09-07'): 'Labor Day',
+        pd.Timestamp('2026-11-26'): 'Thanksgiving',
+        pd.Timestamp('2026-12-25'): 'Christmas',
+        pd.Timestamp('2026-04-05'): 'Easter',             # 2026 Easter
+        pd.Timestamp('2026-02-08'): 'Super Bowl',         # 2026 Super Bowl
+    }
+    
+    merged['is_pre_holiday'] = 0
+    for holiday_date in major_holidays.keys():
+        # Flag 2 days before holiday
+        merged.loc[
+            pd.to_datetime(merged['Date']).isin([holiday_date - pd.Timedelta(days=1), holiday_date - pd.Timedelta(days=2)]),
+            'is_pre_holiday'
+        ] = 1
+    
     # Filter for active days only (Exclude Mondays/zeros)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -100,10 +141,10 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD SIMPLE MODEL WITH INTERACTION ---
-    # Bowls_Sold ~ Intercept + Temp_Centered + is_precipitation + (is_precipitation × Temp_Centered) + is_weekend
+    # --- BUILD ENHANCED MODEL WITH INTERACTION + PAYDAY + HOLIDAY EFFECTS ---
+    # Bowls_Sold ~ Intercept + Temp_Centered + is_precipitation + (is_precipitation × Temp_Centered) + is_weekend + is_payday_effect + is_pre_holiday
     # Note: Temperature is centered (mean subtracted) so intercept = predicted bowls at average temp
-    X = model_df[['Temp_Centered', 'is_precipitation', 'precip_temp_interaction', 'is_weekend']]
+    X = model_df[['Temp_Centered', 'is_precipitation', 'precip_temp_interaction', 'is_weekend', 'is_payday_effect', 'is_pre_holiday']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -118,6 +159,8 @@ try:
         tomorrow_temp = st.number_input("Temperature (°F)", min_value=0, max_value=100, value=35, step=1)
         tomorrow_is_weekend = st.checkbox("Weekend Day (Fri-Sun)", value=False)
         tomorrow_has_precip = st.checkbox("Precipitation Expected", value=False)
+        tomorrow_is_payday = st.checkbox("Payday Effect (4 days after 15th or month-end)", value=False)
+        tomorrow_is_pre_holiday = st.checkbox("Pre-Holiday (2 days before major holiday)", value=False)
         
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
@@ -130,30 +173,38 @@ try:
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
                         (ols_model.params['is_precipitation'] * (1 if tomorrow_has_precip else 0)) +
                         (ols_model.params['precip_temp_interaction'] * tomorrow_interaction) +
-                        (ols_model.params['is_weekend'] * (1 if tomorrow_is_weekend else 0)))
+                        (ols_model.params['is_weekend'] * (1 if tomorrow_is_weekend else 0)) +
+                        (ols_model.params['is_payday_effect'] * (1 if tomorrow_is_payday else 0)) +
+                        (ols_model.params['is_pre_holiday'] * (1 if tomorrow_is_pre_holiday else 0)))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"OLS model with centered temperature (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Enhanced OLS model with 7 features (Mean temp: {mean_temp:.1f}°F)")
     
     with pred_col2:
         st.subheader("📊 Historical Stats & Model Coefficients")
         
-        stat_col1, stat_col2, stat_col3 = st.columns(3)
+        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
         
         with stat_col1:
             avg_bowls = model_df['Bowls_Sold'].mean()
             st.metric("Avg Daily Bowls", f"{avg_bowls:.1f}")
-            st.metric("Total Bowls", f"{int(model_df['Bowls_Sold'].sum())}")
+            st.metric("Weekend Lift", f"+{ols_model.params['is_weekend']:.1f}")
         
         with stat_col2:
-            st.metric("Weekend Lift", f"+{ols_model.params['is_weekend']:.1f} Bowls")
-            st.metric("Precip Impact", f"{ols_model.params['is_precipitation']:+.1f} Bowls",
+            st.metric("Temp Effect", f"{ols_model.params['Temp_Centered']:.2f}/°F")
+            st.metric("Precip Impact", f"{ols_model.params['is_precipitation']:+.1f}",
                      help=f"At avg temp ({mean_temp:.1f}°F)")
         
         with stat_col3:
-            st.metric("Temp Effect", f"{ols_model.params['Temp_Centered']:.2f} per °F")
+            st.metric("💰 Payday Boost", f"+{ols_model.params['is_payday_effect']:.1f}",
+                     help="4 days after 15th or month-end")
+            st.metric("🎉 Holiday Boost", f"+{ols_model.params['is_pre_holiday']:.1f}",
+                     help="2 days before major holiday")
+        
+        with stat_col4:
             st.metric("Model R²", f"{ols_model.rsquared:.3f}")
+            st.metric("Total Bowls", f"{int(model_df['Bowls_Sold'].sum())}")
 
     st.divider()
     
@@ -192,16 +243,39 @@ try:
 
     st.divider()
 
-    # --- TOP 10 REGULARS ---
-    st.subheader("👥 Top 10 Regulars (Most Visits)")
-    loyalty_data = sales_df[sales_df['Customer Name'].notna()]
+    # --- TOP 10 REGULARS (LAST MONTH ONLY) ---
+    st.subheader("👥 Top 10 Regulars - January 2026 Leaderboard")
+    
+    # Filter for January 2026 only
+    jan_2026_sales = sales_df[
+        (pd.to_datetime(sales_df['Date']).dt.year == 2026) & 
+        (pd.to_datetime(sales_df['Date']).dt.month == 1)
+    ]
+    
+    loyalty_data = jan_2026_sales[jan_2026_sales['Customer Name'].notna()]
     if not loyalty_data.empty:
         top_loyalty = loyalty_data.groupby('Customer Name').agg({'Transaction ID': 'nunique', 'Gross Sales': 'sum'}).reset_index()
         top_loyalty.columns = ['Customer Name', 'Total Visits', 'Total Spend']
         top_loyalty = top_loyalty.sort_values(by=['Total Visits', 'Total Spend'], ascending=False).head(10)
+        
+        # Anonymize names to initials (except names with commas - already anonymous)
+        def anonymize_name(name):
+            if ',' in name:
+                return name  # Keep names with commas as-is (already anonymous)
+            parts = str(name).split()
+            if len(parts) >= 2:
+                return f"{parts[0][0]}.{parts[-1][0]}."  # First Initial + Last Initial
+            elif len(parts) == 1:
+                return f"{parts[0][0]}."  # Just first initial
+            else:
+                return name
+        
+        top_loyalty['Customer Name'] = top_loyalty['Customer Name'].apply(anonymize_name)
+        
         st.dataframe(top_loyalty.style.format({'Total Spend': '${:,.2f}'}), use_container_width=True)
+        st.caption("🔒 Names anonymized for privacy (initials only)")
     else:
-        st.info("No customer data available.")
+        st.info("No customer data available for January 2026.")
 
 except Exception as e:
     st.error(f"Dashboard Error: {e}")

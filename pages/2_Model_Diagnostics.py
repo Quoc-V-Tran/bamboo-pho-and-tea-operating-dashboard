@@ -78,22 +78,50 @@ def load_all_data():
 try:
     sales_df, merged = load_all_data()
     
+    # --- FEATURE ENGINEERING ---
+    merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
+    merged['is_precipitation'] = (merged['Precip_Type'] != 'Clear').astype(int)
+    
+    # Payday Effect: Flag days within 4 days after 15th and 30th/last day of month
+    merged['day_of_month'] = pd.to_datetime(merged['Date']).dt.day
+    merged['days_in_month'] = pd.to_datetime(merged['Date']).dt.days_in_month
+    merged['is_payday_effect'] = (
+        ((merged['day_of_month'] >= 16) & (merged['day_of_month'] <= 19)) |
+        ((merged['day_of_month'] >= 1) & (merged['day_of_month'] <= 4)) |
+        (merged['day_of_month'] >= merged['days_in_month'])
+    ).astype(int)
+    
+    # Holiday Effect: Flag 2 days before major holidays
+    major_holidays = {
+        pd.Timestamp('2025-05-26'): 'Memorial Day', pd.Timestamp('2025-07-04'): 'July 4th',
+        pd.Timestamp('2025-09-01'): 'Labor Day', pd.Timestamp('2025-11-27'): 'Thanksgiving',
+        pd.Timestamp('2025-12-25'): 'Christmas', pd.Timestamp('2025-04-20'): 'Easter',
+        pd.Timestamp('2025-02-09'): 'Super Bowl', pd.Timestamp('2026-05-25'): 'Memorial Day',
+        pd.Timestamp('2026-07-04'): 'July 4th', pd.Timestamp('2026-09-07'): 'Labor Day',
+        pd.Timestamp('2026-11-26'): 'Thanksgiving', pd.Timestamp('2026-12-25'): 'Christmas',
+        pd.Timestamp('2026-04-05'): 'Easter', pd.Timestamp('2026-02-08'): 'Super Bowl',
+    }
+    
+    merged['is_pre_holiday'] = 0
+    for holiday_date in major_holidays.keys():
+        merged.loc[
+            pd.to_datetime(merged['Date']).isin([holiday_date - pd.Timedelta(days=1), holiday_date - pd.Timedelta(days=2)]),
+            'is_pre_holiday'
+        ] = 1
+    
     # Prepare model data
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
         (merged['Bowls_Sold'] > 0)
     ].copy()
     
-    model_df['is_weekend'] = model_df['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
-    model_df['is_precipitation'] = model_df['Precip_Type'].isin(['Mixed', 'Rain', 'Flurries', 'Snow', 'Heavy Snow']).astype(int)
-    
     # Center temperature
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     model_df['precip_temp_interaction'] = model_df['is_precipitation'] * model_df['Temp_Centered']
     
-    # Run OLS regression
-    X = model_df[['Temp_Centered', 'is_precipitation', 'precip_temp_interaction', 'is_weekend']]
+    # Run Enhanced OLS regression
+    X = model_df[['Temp_Centered', 'is_precipitation', 'precip_temp_interaction', 'is_weekend', 'is_payday_effect', 'is_pre_holiday']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -112,7 +140,9 @@ try:
             (ols_model.params['Temp_Centered'] * recent_df['Temp_Centered']) +
             (ols_model.params['is_precipitation'] * recent_df['is_precipitation']) +
             (ols_model.params['precip_temp_interaction'] * recent_df['precip_temp_interaction']) +
-            (ols_model.params['is_weekend'] * recent_df['is_weekend'])
+            (ols_model.params['is_weekend'] * recent_df['is_weekend']) +
+            (ols_model.params['is_payday_effect'] * recent_df['is_payday_effect']) +
+            (ols_model.params['is_pre_holiday'] * recent_df['is_pre_holiday'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -177,7 +207,9 @@ try:
         'Temp_Centered': 'Temperature (centered)',
         'is_precipitation': 'Precipitation',
         'precip_temp_interaction': 'Precip × Temp (interaction)',
-        'is_weekend': 'Weekend'
+        'is_weekend': 'Weekend',
+        'is_payday_effect': 'Payday Effect (4 days after 15th/month-end)',
+        'is_pre_holiday': 'Pre-Holiday (2 days before major holiday)'
     }
     
     for var in params.index:
@@ -235,31 +267,39 @@ try:
     temp_range = np.linspace(model_df['Temp_High'].min(), model_df['Temp_High'].max(), 100)
     temp_range_centered = temp_range - mean_temp  # Center for model prediction
     
-    # Weekend + Clear weather
+    # Weekend + Clear weather (baseline: no payday, no pre-holiday)
     y_weekend_clear = (ols_model.params['const'] + 
                       (ols_model.params['Temp_Centered'] * temp_range_centered) + 
                       (ols_model.params['is_weekend'] * 1) +
                       (ols_model.params['is_precipitation'] * 0) +
-                      (ols_model.params['precip_temp_interaction'] * 0))
+                      (ols_model.params['precip_temp_interaction'] * 0) +
+                      (ols_model.params['is_payday_effect'] * 0) +
+                      (ols_model.params['is_pre_holiday'] * 0))
     
-    # Midweek + Clear weather
+    # Midweek + Clear weather (baseline: no payday, no pre-holiday)
     y_midweek_clear = (ols_model.params['const'] + 
                       (ols_model.params['Temp_Centered'] * temp_range_centered) +
                       (ols_model.params['is_precipitation'] * 0) +
-                      (ols_model.params['precip_temp_interaction'] * 0))
+                      (ols_model.params['precip_temp_interaction'] * 0) +
+                      (ols_model.params['is_payday_effect'] * 0) +
+                      (ols_model.params['is_pre_holiday'] * 0))
     
-    # Weekend + Precipitation (interaction effect kicks in)
+    # Weekend + Precipitation (interaction effect kicks in, baseline: no payday, no pre-holiday)
     y_weekend_precip = (ols_model.params['const'] + 
                        (ols_model.params['Temp_Centered'] * temp_range_centered) + 
                        (ols_model.params['is_weekend'] * 1) +
                        (ols_model.params['is_precipitation'] * 1) +
-                       (ols_model.params['precip_temp_interaction'] * temp_range_centered))
+                       (ols_model.params['precip_temp_interaction'] * temp_range_centered) +
+                       (ols_model.params['is_payday_effect'] * 0) +
+                       (ols_model.params['is_pre_holiday'] * 0))
     
-    # Midweek + Precipitation (interaction effect kicks in)
+    # Midweek + Precipitation (interaction effect kicks in, baseline: no payday, no pre-holiday)
     y_midweek_precip = (ols_model.params['const'] + 
                        (ols_model.params['Temp_Centered'] * temp_range_centered) +
                        (ols_model.params['is_precipitation'] * 1) +
-                       (ols_model.params['precip_temp_interaction'] * temp_range_centered))
+                       (ols_model.params['precip_temp_interaction'] * temp_range_centered) +
+                       (ols_model.params['is_payday_effect'] * 0) +
+                       (ols_model.params['is_pre_holiday'] * 0))
 
     # Plot regression lines
     fig.add_trace(go.Scatter(x=temp_range, y=y_weekend_clear, name='Weekend (Clear)', line=dict(color='#DAA520', width=3)))
