@@ -100,8 +100,7 @@ try:
                 title="Price Index ($)",
                 x=1.02
             ),
-            sizemode='diameter',
-            line=dict(width=1, color='white')
+            sizemode='diameter'
         ),
         text=competitors['Hover_Text'],
         hovertemplate='%{text}<extra></extra>',
@@ -117,8 +116,7 @@ try:
         marker=dict(
             size=30,
             color='gold',
-            symbol='star',
-            line=dict(width=2, color='darkgoldenrod')
+            symbol='star'
         ),
         text=bamboo['Hover_Text'],
         hovertemplate='%{text}<extra></extra>',
