@@ -6,7 +6,7 @@ import numpy as np
 import statsmodels.api as sm
 import pytz
 
-st.set_page_config(page_title="Bamboo Pho Operations", layout="wide")
+st.set_page_config(page_title="Daily Insights", layout="wide")
 
 @st.cache_data
 def load_all_data():
@@ -91,7 +91,7 @@ try:
     # Interaction term: Precipitation × Centered Temperature
     model_df['precip_temp_interaction'] = model_df['is_precipitation'] * model_df['Temp_Centered']
 
-    st.title("🍜 Bamboo Pho and Tea Operations Dashboard")
+    st.title("🍜 Daily Insights")
     
     # Show data range
     date_min = merged['Date'].min()
@@ -157,60 +157,6 @@ try:
 
     st.divider()
     
-    # --- ACTUAL VS PREDICTED (Recent Days) ---
-    st.subheader("🎯 Model Performance: Actual vs Predicted")
-    
-    # Get recent operating days (last 7 days with sales, excluding Mondays)
-    recent_df = model_df.tail(14).copy()  # Get more to ensure we have enough after filtering
-    recent_df = recent_df[recent_df['Day_of_Week'] != 'Monday'].tail(7)  # Get last 7 operating days
-    
-    if len(recent_df) > 0:
-        # Calculate predictions for recent days
-        recent_df['Predicted'] = (
-            ols_model.params['const'] + 
-            (ols_model.params['Temp_Centered'] * recent_df['Temp_Centered']) +
-            (ols_model.params['is_precipitation'] * recent_df['is_precipitation']) +
-            (ols_model.params['precip_temp_interaction'] * recent_df['precip_temp_interaction']) +
-            (ols_model.params['is_weekend'] * recent_df['is_weekend'])
-        )
-        
-        recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
-        recent_df['Error_Pct'] = (recent_df['Error'] / recent_df['Bowls_Sold'] * 100)
-        
-        # Create comparison table
-        comparison_data = recent_df[['Date', 'Day_of_Week', 'Temp_High', 'Precip_Type', 'Bowls_Sold', 'Predicted', 'Error', 'Error_Pct']].copy()
-        comparison_data['Date'] = pd.to_datetime(comparison_data['Date']).dt.strftime('%Y-%m-%d')
-        comparison_data['Predicted'] = comparison_data['Predicted'].round(1)
-        comparison_data['Error'] = comparison_data['Error'].round(1)
-        comparison_data['Error_Pct'] = comparison_data['Error_Pct'].round(1)
-        
-        # Flag errors > ±10%
-        comparison_data['Flag'] = comparison_data['Error_Pct'].apply(lambda x: '🚩' if abs(x) > 10 else '')
-        
-        comparison_data.columns = ['Date', 'Day', 'Temp (°F)', 'Weather', 'Actual', 'Predicted', 'Error', 'Error %', 'Flag']
-        
-        st.dataframe(comparison_data, use_container_width=True, hide_index=True)
-        st.caption("🚩 = Error exceeds ±10%")
-        
-        # Show metrics for most recent operating day (Sunday Feb 1)
-        most_recent = recent_df.iloc[-1]
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric(f"📅 {most_recent['Day_of_Week']} {pd.to_datetime(most_recent['Date']).strftime('%b %d')}", 
-                     "Most Recent Day")
-        with col2:
-            st.metric("Actual Bowls", f"{int(most_recent['Bowls_Sold'])}")
-        with col3:
-            st.metric("Predicted Bowls", f"{int(most_recent['Predicted'])}")
-        with col4:
-            error_val = int(most_recent['Error'])
-            st.metric("Prediction Error", f"{error_val:+d} bowls", 
-                     delta=f"{most_recent['Error_Pct']:.1f}%",
-                     delta_color="inverse")
-    
-    st.divider()
-    
     # --- LINE CHART: Pho Bowls vs Daily High Temperature ---
     st.subheader('📈 Pho Bowls Sold vs Daily High Temperature (Excluding Closed Days)')
     chart_df = merged.sort_values('Date').copy()
@@ -236,128 +182,6 @@ try:
     st.plotly_chart(fig_line, use_container_width=True)
     
     st.divider()
-    
-    # --- MODEL STATISTICS (STARGAZER-STYLE) ---
-    st.subheader("📊 OLS Regression Results")
-    
-    # Create a clean summary table
-    summary_data = {
-        'Variable': [],
-        'Coefficient': [],
-        'Std Error': [],
-        't-statistic': [],
-        'P-value': [],
-        'Significance': []
-    }
-    
-    # Get model parameters
-    params = ols_model.params
-    std_err = ols_model.bse
-    t_stats = ols_model.tvalues
-    p_values = ols_model.pvalues
-    
-    # Format variable names
-    var_names = {
-        'const': f'Intercept (at {mean_temp:.1f}°F avg temp)',
-        'Temp_Centered': 'Temperature (centered)',
-        'is_precipitation': 'Precipitation',
-        'precip_temp_interaction': 'Precip × Temp (interaction)',
-        'is_weekend': 'Weekend'
-    }
-    
-    for var in params.index:
-        summary_data['Variable'].append(var_names.get(var, var))
-        summary_data['Coefficient'].append(f"{params[var]:.4f}")
-        summary_data['Std Error'].append(f"{std_err[var]:.4f}")
-        summary_data['t-statistic'].append(f"{t_stats[var]:.3f}")
-        summary_data['P-value'].append(f"{p_values[var]:.4f}")
-        
-        # Add significance stars
-        if p_values[var] < 0.001:
-            sig = '***'
-        elif p_values[var] < 0.01:
-            sig = '**'
-        elif p_values[var] < 0.05:
-            sig = '*'
-        elif p_values[var] < 0.10:
-            sig = '.'
-        else:
-            sig = ''
-        summary_data['Significance'].append(sig)
-    
-    summary_df = pd.DataFrame(summary_data)
-    
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
-    
-    # Model statistics
-    stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
-    with stats_col1:
-        st.metric("R²", f"{ols_model.rsquared:.4f}")
-    with stats_col2:
-        st.metric("Adj. R²", f"{ols_model.rsquared_adj:.4f}")
-    with stats_col3:
-        st.metric("F-statistic", f"{ols_model.fvalue:.2f}")
-    with stats_col4:
-        st.metric("Prob(F)", f"{ols_model.f_pvalue:.4f}")
-    
-    st.caption("Significance codes: *** p<0.001, ** p<0.01, * p<0.05, . p<0.10")
-    st.caption(f"Observations: {int(ols_model.nobs)} | Residual Std. Error: {np.sqrt(ols_model.mse_resid):.3f}")
-    
-    st.divider()
-
-    # --- SCATTER PLOT WITH REGRESSION LINES ---
-    st.subheader("🌡️ Temperature vs Bowls Sold (Operating Days Only)")
-    
-    fig = px.scatter(model_df, x='Temp_High', y='Bowls_Sold', color='Precip_Type',
-                     color_discrete_map={
-                         "Clear": "#D3D3D3", "Flurries": "#E0F2FE", "Snow": "#7DD3FC",
-                         "Mixed": "#38BDF8", "Rain": "#1E3A8A", "Heavy Snow": "#FF0000"
-                     },
-                     hover_name='Day_of_Week',
-                     labels={'Temp_High': 'Temperature (°F)', 'Bowls_Sold': 'Bowls Sold'})
-    
-    # Regression Lines with interaction term
-    temp_range = np.linspace(model_df['Temp_High'].min(), model_df['Temp_High'].max(), 100)
-    temp_range_centered = temp_range - mean_temp  # Center for model prediction
-    
-    # Weekend + Clear weather
-    y_weekend_clear = (ols_model.params['const'] + 
-                      (ols_model.params['Temp_Centered'] * temp_range_centered) + 
-                      (ols_model.params['is_weekend'] * 1) +
-                      (ols_model.params['is_precipitation'] * 0) +
-                      (ols_model.params['precip_temp_interaction'] * 0))
-    
-    # Midweek + Clear weather
-    y_midweek_clear = (ols_model.params['const'] + 
-                      (ols_model.params['Temp_Centered'] * temp_range_centered) +
-                      (ols_model.params['is_precipitation'] * 0) +
-                      (ols_model.params['precip_temp_interaction'] * 0))
-    
-    # Weekend + Precipitation (interaction effect kicks in)
-    y_weekend_precip = (ols_model.params['const'] + 
-                       (ols_model.params['Temp_Centered'] * temp_range_centered) + 
-                       (ols_model.params['is_weekend'] * 1) +
-                       (ols_model.params['is_precipitation'] * 1) +
-                       (ols_model.params['precip_temp_interaction'] * temp_range_centered))
-    
-    # Midweek + Precipitation (interaction effect kicks in)
-    y_midweek_precip = (ols_model.params['const'] + 
-                       (ols_model.params['Temp_Centered'] * temp_range_centered) +
-                       (ols_model.params['is_precipitation'] * 1) +
-                       (ols_model.params['precip_temp_interaction'] * temp_range_centered))
-
-    # Plot regression lines
-    fig.add_trace(go.Scatter(x=temp_range, y=y_weekend_clear, name='Weekend (Clear)', line=dict(color='#DAA520', width=3)))
-    fig.add_trace(go.Scatter(x=temp_range, y=y_midweek_clear, name='Midweek (Clear)', line=dict(color='#DAA520', width=3, dash='dash')))
-    fig.add_trace(go.Scatter(x=temp_range, y=y_weekend_precip, name='Weekend (Precip)', line=dict(color='#1E88E5', width=3)))
-    fig.add_trace(go.Scatter(x=temp_range, y=y_midweek_precip, name='Midweek (Precip)', line=dict(color='#1E88E5', width=3, dash='dash')))
-    
-    fig.update_traces(marker=dict(size=12, line=dict(width=1, color='black')))
-    fig.update_layout(template="simple_white", hovermode="closest")
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
-
     # --- TOP 10 DISHES SOLD ---
     st.subheader("🍽️ Top 10 Dishes Sold")
     top_dishes = sales_df.groupby('Item')['Qty'].sum().reset_index()

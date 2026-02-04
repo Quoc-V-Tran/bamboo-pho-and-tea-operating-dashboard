@@ -2,10 +2,10 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
-st.title("🗺️ Pho Competitors in Greater Harrisburg Area")
+st.title("🗺️ Market Intelligence")
 
 st.markdown("""
-### Competitive Intelligence Dashboard
+### Competitive Landscape Analysis
 This map shows all pho restaurants in the Greater Harrisburg area with:
 - **Bayesian Average Rating** (confidence-weighted using m=50)
 - **Price Index** (average of Pho Dac Biet L and Pho 2 Topping L)
