@@ -91,7 +91,7 @@ try:
     # Interaction term: Precipitation × Centered Temperature
     model_df['precip_temp_interaction'] = model_df['is_precipitation'] * model_df['Temp_Centered']
 
-    st.title("🍜 Bamboo Pho Operations Dashboard")
+    st.title("🍜 Bamboo Pho and Tea Operations Dashboard")
     
     # Show data range
     date_min = merged['Date'].min()
@@ -184,9 +184,13 @@ try:
         comparison_data['Error'] = comparison_data['Error'].round(1)
         comparison_data['Error_Pct'] = comparison_data['Error_Pct'].round(1)
         
-        comparison_data.columns = ['Date', 'Day', 'Temp (°F)', 'Weather', 'Actual', 'Predicted', 'Error', 'Error %']
+        # Flag errors > ±10%
+        comparison_data['Flag'] = comparison_data['Error_Pct'].apply(lambda x: '🚩' if abs(x) > 10 else '')
+        
+        comparison_data.columns = ['Date', 'Day', 'Temp (°F)', 'Weather', 'Actual', 'Predicted', 'Error', 'Error %', 'Flag']
         
         st.dataframe(comparison_data, use_container_width=True, hide_index=True)
+        st.caption("🚩 = Error exceeds ±10%")
         
         # Show metrics for most recent operating day (Sunday Feb 1)
         most_recent = recent_df.iloc[-1]
@@ -204,6 +208,106 @@ try:
             st.metric("Prediction Error", f"{error_val:+d} bowls", 
                      delta=f"{most_recent['Error_Pct']:.1f}%",
                      delta_color="inverse")
+    
+    st.divider()
+    
+    # --- COMPETITORS MAP ---
+    st.subheader("🗺️ Pho Competitors in Greater Harrisburg Area")
+    
+    # Load competitors data
+    competitors = pd.read_csv('Pho Competitors.csv')
+    
+    # Calculate average price between two pho types
+    competitors['Avg_Pho_Price'] = (competitors['Pho Dac Biet L'] + competitors['Pho 2 Topping equivalent L']) / 2
+    
+    # Calculate normalized rating (Rating weighted by number of reviews)
+    max_reviews = competitors['Google Reviews'].max()
+    competitors['Normalized_Rating'] = (competitors['Google Rating'] * competitors['Google Reviews']) / max_reviews
+    
+    # Manually add lat/long for Central PA addresses (using approximate coordinates)
+    location_coords = {
+        "4401 Carlisle Pike Ste F, Camp Hill, PA 17011": (40.2401, -76.9358),
+        "2800 Paxton St, Harrisburg, PA 17111": (40.2737, -76.8294),
+        "4830 Carlisle Pike. Ste D8. Mechanicsburg, PA": (40.2139, -77.0486),
+        "5490 Derry St B, Harrisburg, PA 17111": (40.2856, -76.7953),
+        "6003 Allentown Blvd, Harrisburg, PA 17112": (40.3141, -76.7836),
+        "1030 S 13th St, Harrisburg, PA 17104": (40.2556, -76.8756),
+        "314 S 10th St, Lemoyne, PA 17043": (40.2365, -76.8944),
+        "304 S Progress Ave rear, Harrisburg, PA 17109": (40.2661, -76.8458),
+        "304 Reily St, Harrisburg, PA 17102": (40.2638, -76.8867)
+    }
+    
+    competitors['Latitude'] = competitors['Address'].map(lambda x: location_coords.get(x, (None, None))[0])
+    competitors['Longitude'] = competitors['Address'].map(lambda x: location_coords.get(x, (None, None))[1])
+    
+    # Create hover text
+    competitors['Hover_Text'] = (
+        competitors['Restaurants'] + '<br>' +
+        'Rating: ' + competitors['Google Rating'].astype(str) + ' (' + competitors['Google Reviews'].astype(str) + ' reviews)<br>' +
+        'Normalized Score: ' + competitors['Normalized_Rating'].round(2).astype(str) + '<br>' +
+        'Avg Pho Price: $' + competitors['Avg_Pho_Price'].round(2).astype(str) + '<br>' +
+        competitors['Address']
+    )
+    
+    # Create map using scatter_mapbox
+    fig_map = go.Figure()
+    
+    # Add competitors as scatter points
+    fig_map.add_trace(go.Scattermapbox(
+        lat=competitors['Latitude'],
+        lon=competitors['Longitude'],
+        mode='markers',
+        marker=dict(
+            size=competitors['Normalized_Rating'] * 3,  # Scale marker size by normalized rating
+            color=competitors['Avg_Pho_Price'],
+            colorscale='RdYlGn_r',  # Red (expensive) to Green (cheap)
+            showscale=True,
+            colorbar=dict(title="Avg Price ($)"),
+            sizemode='diameter'
+        ),
+        text=competitors['Hover_Text'],
+        hovertemplate='%{text}<extra></extra>',
+        name='Competitors'
+    ))
+    
+    # Highlight Bamboo Pho with a star
+    bamboo = competitors[competitors['Restaurants'] == 'Bamboo Pho and Tea'].iloc[0]
+    fig_map.add_trace(go.Scattermapbox(
+        lat=[bamboo['Latitude']],
+        lon=[bamboo['Longitude']],
+        mode='markers',
+        marker=dict(
+            size=25,
+            color='gold',
+            symbol='star'
+        ),
+        text=bamboo['Hover_Text'],
+        hovertemplate='%{text}<extra></extra>',
+        name='Bamboo Pho and Tea',
+        showlegend=True
+    ))
+    
+    fig_map.update_layout(
+        mapbox=dict(
+            style="open-street-map",
+            center=dict(lat=40.26, lon=-76.88),  # Center on Harrisburg area
+            zoom=10.5
+        ),
+        height=600,
+        margin=dict(l=0, r=0, t=0, b=0),
+        showlegend=True
+    )
+    
+    st.plotly_chart(fig_map, use_container_width=True)
+    
+    # Show legend explanation
+    col1, col2 = st.columns(2)
+    with col1:
+        st.caption("🔵 **Marker Size:** Normalized Rating (Rating × Reviews / Max Reviews)")
+        st.caption("⭐ **Gold Star:** Bamboo Pho and Tea location")
+    with col2:
+        st.caption("🎨 **Color Scale:** Average Pho Price (Red = Higher, Green = Lower)")
+        st.caption(f"💰 **Price Range:** ${competitors['Avg_Pho_Price'].min():.2f} - ${competitors['Avg_Pho_Price'].max():.2f}")
     
     st.divider()
 
