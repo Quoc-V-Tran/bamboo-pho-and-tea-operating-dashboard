@@ -99,8 +99,8 @@ try:
     
     # --- FEATURE ENGINEERING ---
     
-    # Weekend binary (Saturday and Sunday only)
-    merged['is_weekend'] = merged['Day_of_Week'].isin(['Saturday', 'Sunday']).astype(int)
+    # Weekend binary (Friday, Saturday, Sunday - combined payday/weekend effect)
+    merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
     
     # Precipitation type binaries (3 categories)
     merged['is_clear'] = (merged['Precip_Type'].isin(['None', 'Clear'])).astype(int)
@@ -186,21 +186,10 @@ try:
     
     merged['is_pre_holiday_friday'] = (merged['is_pre_holiday'] * merged['is_friday_base']).astype(int)
     
-    # Private Sector Payday Effects
-    merged['is_weekly_friday'] = (merged['Day_of_Week'] == 'Friday').astype(int)
-    merged['is_semi_monthly'] = 0
-    merged.loc[merged['Date_dt'].dt.day == 15, 'is_semi_monthly'] = 1
-    merged.loc[merged['Date_dt'].dt.day == merged['Date_dt'].dt.days_in_month, 'is_semi_monthly'] = 1
-    merged['is_semi_monthly_weekend'] = (merged['is_semi_monthly'] * merged['is_weekend']).astype(int)
-    
     # Year Dummies (Capture Model Drift)
     merged['year'] = merged['Date_dt'].dt.year
     merged['is_2024'] = (merged['year'] == 2024).astype(int)
     merged['is_2025'] = (merged['year'] == 2025).astype(int)
-    merged['is_2026'] = (merged['year'] == 2026).astype(int)
-    
-    # Interaction: 2026 × Friday (Test if Navy base effect strengthened in 2026)
-    merged['is_2026_friday'] = (merged['is_2026'] * merged['is_weekly_friday']).astype(int)
     
     # Prepare model data (exclude Mondays and zero sales)
     model_df = merged[
@@ -222,7 +211,7 @@ try:
         # Build temporary model with this kink
         X_temp = model_df[[f'temp_cold_{kink}', f'temp_hot_{kink}', 
                           'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
-                          'is_payday_weekend', 'is_weekly_friday',
+                          'is_payday_weekend',
                           'is_2024', 'is_2025', 'season_impact']]
         X_temp = sm.add_constant(X_temp)
         y_temp = model_df['Bowls_Sold']
@@ -239,9 +228,10 @@ try:
     
     # --- BUILD SIMPLIFIED PIECEWISE TEMPERATURE MODEL ---
     # Season_Impact: High (+1) = Jan/Feb/Nov/Dec, Low (-1) = Apr-Aug, Neutral (0) = Mar/Sep/Oct
+    # Weekend now includes Friday (combined payday/weekend effect)
     # Temperature: Piecewise at optimal kink point
     X = model_df[['temp_cold', 'temp_hot', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
-                  'is_payday_weekend', 'is_weekly_friday',
+                  'is_payday_weekend',
                   'is_2024', 'is_2025', 'season_impact']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
@@ -280,12 +270,12 @@ try:
     
     with stat_col3:
         st.markdown("**Key Effects**")
-        st.metric("📆 Fri", f"+{ols_model.params['is_weekly_friday']:.1f}",
-                 help="General Friday payday")
         st.metric("🌦️ Season", f"{ols_model.params['season_impact']:+.1f}",
                  help="Winter peak vs warm slump")
         st.metric("🏛️ Fed Pay", f"+{ols_model.params['is_federal_payday']:.1f}",
                  help="NSA bi-weekly payday")
+        st.metric("🏛️ Pay Wknd", f"+{ols_model.params['is_payday_weekend']:.1f}",
+                 help="Sat/Sun after federal payday")
     
     st.divider()
     
@@ -380,7 +370,6 @@ try:
             (ols_model.params['is_snow'] * recent_df['is_snow']) +
             (ols_model.params['is_federal_payday'] * recent_df['is_federal_payday']) +
             (ols_model.params['is_payday_weekend'] * recent_df['is_payday_weekend']) +
-            (ols_model.params['is_weekly_friday'] * recent_df['is_weekly_friday']) +
             (ols_model.params['is_2024'] * recent_df['is_2024']) +
             (ols_model.params['is_2025'] * recent_df['is_2025']) +
             (ols_model.params['season_impact'] * recent_df['season_impact'])
@@ -447,12 +436,11 @@ try:
         'const': f'Intercept (Baseline: 2026, Neutral season, Tue-Thu, Clear, Temp at kink)',
         'temp_cold': f'Temperature ≤ {best_kink}°F (below kink, should be ~0)',
         'temp_hot': f'Temperature > {best_kink}°F (above kink, should be negative)',
-        'is_weekend': 'Weekend (Sat/Sun only)',
+        'is_weekend': 'Weekend (Fri/Sat/Sun - combined payday/weekend)',
         'is_rain': 'Rain/Mixed (vs Clear)',
         'is_snow': 'Snow/Flurries/Heavy (vs Clear)',
         'is_federal_payday': 'Federal Payday Friday (bi-weekly, NSA)',
         'is_payday_weekend': 'Payday Weekend (Sat/Sun after federal payday)',
-        'is_weekly_friday': 'Weekly Friday (General Payday)',
         'is_2024': 'Year 2024 (vs 2026 baseline)',
         'is_2025': 'Year 2025 (vs 2026 baseline)',
         'season_impact': 'Season Impact (+1: Jan/Feb/Nov/Dec, -1: Apr-Aug, 0: Mar/Sep/Oct)'

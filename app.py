@@ -93,8 +93,8 @@ try:
     
     # --- FEATURE ENGINEERING ---
     
-    # Weekend binary (Saturday and Sunday ONLY - Friday is separate for base traffic)
-    merged['is_weekend'] = merged['Day_of_Week'].isin(['Saturday', 'Sunday']).astype(int)
+    # Weekend binary (Friday, Saturday, Sunday - combined payday/weekend effect)
+    merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
     
     # Precipitation type binaries (3 categories)
     merged['is_clear'] = (merged['Precip_Type'].isin(['None', 'Clear'])).astype(int)
@@ -155,26 +155,10 @@ try:
     # 3. Friday Base Traffic (NSA Mechanicsburg lunch rush)
     merged['is_friday_base'] = (merged['Day_of_Week'] == 'Friday').astype(int)
     
-    # --- PRIVATE SECTOR PAYDAY EFFECTS ---
-    # Every Friday = General payday for many local workers
-    merged['is_weekly_friday'] = (merged['Day_of_Week'] == 'Friday').astype(int)
-    
-    # Semi-monthly paydays: 15th and last day of each month
-    merged['is_semi_monthly'] = 0
-    merged.loc[merged['Date_dt'].dt.day == 15, 'is_semi_monthly'] = 1
-    merged.loc[merged['Date_dt'].dt.day == merged['Date_dt'].dt.days_in_month, 'is_semi_monthly'] = 1
-    
-    # Interaction: Semi-monthly payday × Weekend (15th/month-end on Fri-Sun = massive weekend)
-    merged['is_semi_monthly_weekend'] = (merged['is_semi_monthly'] * merged['is_weekend']).astype(int)
-    
     # --- YEAR DUMMIES (Capture Model Drift) ---
     merged['year'] = merged['Date_dt'].dt.year
     merged['is_2024'] = (merged['year'] == 2024).astype(int)
     merged['is_2025'] = (merged['year'] == 2025).astype(int)
-    merged['is_2026'] = (merged['year'] == 2026).astype(int)
-    
-    # Interaction: 2026 × Friday (Test if Navy base effect strengthened in 2026)
-    merged['is_2026_friday'] = (merged['is_2026'] * merged['is_weekly_friday']).astype(int)
     
     # Filter for active days only (Exclude Mondays and zero sales)
     model_df = merged[
@@ -227,7 +211,7 @@ try:
         # Build temporary model with this kink
         X_temp = model_df[[f'temp_cold_{kink}', f'temp_hot_{kink}', 
                           'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
-                          'is_payday_weekend', 'is_weekly_friday',
+                          'is_payday_weekend',
                           'is_2024', 'is_2025', 'season_impact']]
         X_temp = sm.add_constant(X_temp)
         y_temp = model_df['Bowls_Sold']
@@ -252,13 +236,14 @@ try:
     model_df['temp_hot'] = model_df['Temp_High'].apply(lambda t: max(0, t - best_kink))
 
     # --- BUILD SIMPLIFIED PIECEWISE TEMPERATURE MODEL ---
-    # Bowls_Sold ~ Temp_Cold + Temp_Hot + Weekend + Rain + Snow + Federal_Payday + Payday_Weekend + 
-    #              Weekly_Friday + Year_2024 + Year_2025 + Season_Impact
+    # Bowls_Sold ~ Temp_Cold + Temp_Hot + Weekend(Fri/Sat/Sun) + Rain + Snow + Federal_Payday + 
+    #              Payday_Weekend + Year_2024 + Year_2025 + Season_Impact
     # Note: is_clear is baseline for precipitation, 2026 is baseline for year
+    # Weekend now includes Friday (combined payday/weekend effect)
     # Season_Impact: High (+1) = Jan/Feb/Nov/Dec, Low (-1) = Apr-Aug, Neutral (0) = Mar/Sep/Oct
     # Temperature: Piecewise at optimal kink point
     X = model_df[['temp_cold', 'temp_hot', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
-                  'is_payday_weekend', 'is_weekly_friday',
+                  'is_payday_weekend',
                   'is_2024', 'is_2025', 'season_impact']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
@@ -290,17 +275,17 @@ try:
         st.markdown("**🌤️ Weather & Day Type**")
         col_a, col_b = st.columns(2)
         with col_a:
-            tomorrow_is_weekend = st.checkbox("Weekend (Sat/Sun)", value=False)
+            tomorrow_is_weekend = st.checkbox("Weekend (Fri/Sat/Sun)", value=False,
+                                              help="Combined Friday payday + weekend effect")
             tomorrow_is_rain = st.checkbox("Rain/Mixed", value=False)
         with col_b:
             tomorrow_is_snow = st.checkbox("Snow/Flurries", value=False)
         
-        st.markdown("**💰 Payday Events**")
+        st.markdown("**💰 Federal Payday (NSA)**")
         col_c, col_d = st.columns(2)
         with col_c:
-            tomorrow_is_weekly_friday = st.checkbox("Friday (General Payday)", value=False)
-        with col_d:
             tomorrow_is_fed_payday = st.checkbox("Federal Payday Friday", value=False, help="Bi-weekly NSA")
+        with col_d:
             tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after)", value=False)
         
         st.markdown("**🌦️ Seasonality**")
@@ -329,14 +314,13 @@ try:
                         (ols_model.params['is_snow'] * (1 if tomorrow_is_snow else 0)) +
                         (ols_model.params['is_federal_payday'] * (1 if tomorrow_is_fed_payday else 0)) +
                         (ols_model.params['is_payday_weekend'] * (1 if tomorrow_is_payday_wknd else 0)) +
-                        (ols_model.params['is_weekly_friday'] * (1 if tomorrow_is_weekly_friday else 0)) +
                         (ols_model.params['is_2024'] * 0) +  # Tomorrow is 2026, not 2024
                         (ols_model.params['is_2025'] * 0) +  # Tomorrow is 2026, not 2025
                         (ols_model.params['season_impact'] * tomorrow_season_impact))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Simplified piecewise model (11 features, Kink: {optimal_kink}°F)")
+                 help=f"Parsimonious model (10 features, Kink: {optimal_kink}°F)")
         
         # --- CAPACITY CONSTRAINT ANALYSIS ---
         MAX_DINE_IN_CAPACITY = 80  # Based on 10 tables, ~3 turns/day, 2.5 bowls/table avg
