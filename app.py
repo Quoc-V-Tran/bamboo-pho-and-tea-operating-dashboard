@@ -166,6 +166,27 @@ try:
 
     st.title("🍜 Daily Insights")
     
+    # Sidebar: Shadow Demand Explanation
+    with st.sidebar:
+        st.markdown("### 📊 About Capacity Planning")
+        st.markdown("""
+        **What is "Shadow Demand"?**
+        
+        Our model predicts customer *intent* to visit, not just realized sales. 
+        
+        With **10 tables** and typical turnover, dine-in capacity is ~**80 bowls/day**.
+        
+        When predictions exceed this:
+        - 🚨 You're hitting physical constraints
+        - 💰 Lost revenue opportunity without takeout
+        - 📈 High demand = optimize for speed & takeout
+        
+        **Capacity Alert Zones:**
+        - 🟢 < 68 bowls: Comfortable capacity
+        - 🟡 68-80 bowls: High demand, manageable
+        - 🔴 > 80 bowls: Peak alert - prioritize takeout
+        """)
+    
     # Show data range
     date_min = merged['Date'].min()
     date_max = merged['Date'].max()
@@ -244,6 +265,44 @@ try:
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
                  help=f"Model with year controls - predicting for 2026 (Mean temp: {mean_temp:.1f}°F)")
+        
+        # --- CAPACITY CONSTRAINT ANALYSIS ---
+        MAX_DINE_IN_CAPACITY = 80  # Based on 10 tables, ~3 turns/day, 2.5 bowls/table avg
+        predicted_bowls = int(max(0, tomorrow_pred))
+        
+        if predicted_bowls > MAX_DINE_IN_CAPACITY:
+            capacity_diff = predicted_bowls - MAX_DINE_IN_CAPACITY
+            st.warning(f"""
+            ⚠️ **Peak Demand Alert!**
+            
+            Predicted demand is **{capacity_diff} bowls above seating capacity** ({MAX_DINE_IN_CAPACITY} bowls).
+            
+            **Operational Recommendations:**
+            - Prioritize takeout orders to capture overflow demand
+            - Pre-pack garnish kits (herbs, lime, jalapeños, bean sprouts)
+            - Consider prep staff scheduling for high-volume service
+            - Ensure adequate to-go containers in stock
+            
+            💡 *This represents "Shadow Demand" - potential sales lost without takeout optimization.*
+            """)
+        elif predicted_bowls > MAX_DINE_IN_CAPACITY * 0.85:
+            # 85-100% capacity - high but manageable
+            st.info(f"""
+            📊 **High Demand Expected**
+            
+            Predicted demand is **{predicted_bowls} bowls** (~{100*predicted_bowls/MAX_DINE_IN_CAPACITY:.0f}% of capacity).
+            
+            Operating near capacity. Takeout orders will help maximize revenue.
+            """)
+        else:
+            # Comfortable capacity
+            st.success(f"""
+            ✅ **Demand Within Capacity**
+            
+            Predicted demand is **{predicted_bowls} bowls** (~{100*predicted_bowls/MAX_DINE_IN_CAPACITY:.0f}% of capacity).
+            
+            Comfortable service level for 10-table dine-in capacity.
+            """)
         
         st.info("💡 For detailed model performance metrics and diagnostics, see the **Model Diagnostics** page in the sidebar.")
 
