@@ -83,6 +83,12 @@ try:
     # Weekend binary
     merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
     
+    # Season dummies (Winter = reference)
+    merged['month'] = pd.to_datetime(merged['Date']).dt.month
+    merged['is_spring'] = merged['month'].isin([3, 4, 5]).astype(int)
+    merged['is_summer'] = merged['month'].isin([6, 7, 8]).astype(int)
+    merged['is_fall'] = merged['month'].isin([9, 10, 11]).astype(int)
+    
     # Prepare model data
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -100,8 +106,8 @@ try:
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run OLS regression with weekend + precipitation types
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_heavy_snow', 'is_mixed', 'is_flurries']]
+    # Run OLS regression with weekend + precipitation types + seasons
+    X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_heavy_snow', 'is_mixed', 'is_flurries', 'is_spring', 'is_summer', 'is_fall']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -123,7 +129,10 @@ try:
             (ols_model.params['is_snow'] * recent_df['is_snow']) +
             (ols_model.params['is_heavy_snow'] * recent_df['is_heavy_snow']) +
             (ols_model.params['is_mixed'] * recent_df['is_mixed']) +
-            (ols_model.params['is_flurries'] * recent_df['is_flurries'])
+            (ols_model.params['is_flurries'] * recent_df['is_flurries']) +
+            (ols_model.params['is_spring'] * recent_df['is_spring']) +
+            (ols_model.params['is_summer'] * recent_df['is_summer']) +
+            (ols_model.params['is_fall'] * recent_df['is_fall'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -184,14 +193,17 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (Midweek, Clear, {mean_temp:.1f}°F)',
+        'const': f'Intercept (Midweek, Clear, Winter, {mean_temp:.1f}°F)',
         'Temp_Centered': 'Temperature (centered)',
         'is_weekend': 'Weekend (Fri/Sat/Sun)',
         'is_rain': 'Rain (vs Clear)',
         'is_snow': 'Snow (vs Clear)',
         'is_heavy_snow': 'Heavy Snow (vs Clear)',
         'is_mixed': 'Mixed (vs Clear)',
-        'is_flurries': 'Flurries (vs Clear)'
+        'is_flurries': 'Flurries (vs Clear)',
+        'is_spring': 'Spring (vs Winter)',
+        'is_summer': 'Summer (vs Winter)',
+        'is_fall': 'Fall (vs Winter)'
     }
     
     for var in params.index:

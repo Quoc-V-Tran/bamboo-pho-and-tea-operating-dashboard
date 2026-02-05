@@ -77,6 +77,13 @@ try:
     # Weekend binary (Friday, Saturday, Sunday)
     merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
     
+    # Season dummies (Winter = reference: Dec, Jan, Feb)
+    merged['month'] = pd.to_datetime(merged['Date']).dt.month
+    merged['is_spring'] = merged['month'].isin([3, 4, 5]).astype(int)  # Mar, Apr, May
+    merged['is_summer'] = merged['month'].isin([6, 7, 8]).astype(int)  # Jun, Jul, Aug
+    merged['is_fall'] = merged['month'].isin([9, 10, 11]).astype(int)  # Sep, Oct, Nov
+    # Winter (Dec=12, Jan=1, Feb=2) is reference = 0
+    
     # Filter for active days only (Exclude Mondays/zeros)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -103,10 +110,10 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD MODEL WITH WEEKEND + PRECIPITATION TYPES ---
-    # Bowls_Sold ~ Intercept + Temp_Centered + is_weekend + Precipitation_Type_Dummies
-    # Note: Clear weather is reference category for precipitation
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_heavy_snow', 'is_mixed', 'is_flurries']]
+    # --- BUILD MODEL WITH WEEKEND + PRECIPITATION TYPES + SEASONS ---
+    # Bowls_Sold ~ Intercept + Temp_Centered + is_weekend + Precipitation_Types + Seasons
+    # Note: Clear weather and Winter are reference categories
+    X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_heavy_snow', 'is_mixed', 'is_flurries', 'is_spring', 'is_summer', 'is_fall']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -123,6 +130,9 @@ try:
         tomorrow_precip = st.selectbox("Precipitation Type", 
                                       ["Clear", "Rain", "Snow", "Heavy Snow", "Mixed", "Flurries"],
                                       index=0)
+        tomorrow_season = st.selectbox("Season",
+                                      ["Winter", "Spring", "Summer", "Fall"],
+                                      index=0)  # Default to Winter
         
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
@@ -141,14 +151,24 @@ try:
             precip_effect = ols_model.params['is_flurries']
         # Clear = 0 (reference)
         
+        # Calculate season effect
+        season_effect = 0
+        if tomorrow_season == "Spring":
+            season_effect = ols_model.params['is_spring']
+        elif tomorrow_season == "Summer":
+            season_effect = ols_model.params['is_summer']
+        elif tomorrow_season == "Fall":
+            season_effect = ols_model.params['is_fall']
+        # Winter = 0 (reference)
+        
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
                         (ols_model.params['is_weekend'] * (1 if tomorrow_is_weekend else 0)) +
-                        precip_effect)
+                        precip_effect + season_effect)
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Model with weekend + precipitation types (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Full model: Temp + Weekend + Precip + Season (Mean temp: {mean_temp:.1f}°F)")
     
     with pred_col2:
         st.subheader("📊 Historical Stats & Model Coefficients")
