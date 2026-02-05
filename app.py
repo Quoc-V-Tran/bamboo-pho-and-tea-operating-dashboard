@@ -195,9 +195,10 @@ try:
     # --- TOMORROW'S PREDICTION (Top Section) ---
     st.header("📅 Tomorrow's Forecast")
     
-    pred_col1, pred_col2 = st.columns([1, 2])
+    # Center the forecast section
+    left_pad, forecast_col, right_pad = st.columns([1, 3, 1])
     
-    with pred_col1:
+    with forecast_col:
         st.subheader("Enter Tomorrow's Forecast")
         tomorrow_temp = st.number_input("Temperature (°F)", min_value=0, max_value=100, value=35, step=1)
         
