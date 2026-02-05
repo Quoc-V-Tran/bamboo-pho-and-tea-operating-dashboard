@@ -105,15 +105,15 @@ try:
     merged['Date_dt'] = pd.to_datetime(merged['Date'])
     merged['month'] = merged['Date_dt'].dt.month
     
-    # High Demand months: Jan, Feb, Nov, Dec (+1)
-    # Low Demand months: April, June (-1)
-    # Neutral: All other months (0)
+    # High Demand (+1): Jan, Feb, Nov, Dec (The Winter Peak)
+    # Low Demand (-1): Apr, May, Jun, Jul, Aug (The Transitions & Heat Slump)
+    # Neutral (0): March, September, October
     def get_season_impact(month):
-        if month in [1, 2, 11, 12]:  # High demand (winter/holiday)
+        if month in [1, 2, 11, 12]:  # High demand (winter peak)
             return 1
-        elif month in [4, 6]:  # Low demand (spring/early summer)
+        elif month in [4, 5, 6, 7, 8]:  # Low demand (warm season slump)
             return -1
-        else:  # Neutral (Mar, May, Jul, Aug, Sep, Oct)
+        else:  # Neutral (Mar, Sep, Oct - shoulder seasons)
             return 0
     
     merged['season_impact'] = merged['month'].apply(get_season_impact)
@@ -310,9 +310,9 @@ try:
             "Season Impact", 
             options=[1, 0, -1],
             format_func=lambda x: {
-                1: "High Demand (Jan, Feb, Nov, Dec)",
-                0: "Neutral (Mar, May, Jul, Aug, Sep, Oct)",
-                -1: "Low Demand (Apr, Jun)"
+                1: "High Demand (Jan, Feb, Nov, Dec - Winter Peak)",
+                0: "Neutral (Mar, Sep, Oct - Shoulder Seasons)",
+                -1: "Low Demand (Apr-Aug - Warm Season Slump)"
             }[x],
             index=0,  # Default to High Demand (it's February)
             help="Consolidated seasonal demand pattern"
