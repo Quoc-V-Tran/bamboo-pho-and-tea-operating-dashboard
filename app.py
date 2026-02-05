@@ -10,8 +10,17 @@ st.set_page_config(page_title="Daily Insights", layout="wide")
 
 @st.cache_data
 def load_all_data():
-    # Load and adjust timezone - combining 2025 and 2026 data
+    # Load and adjust timezone - combining 2024, 2025, and 2026 data
     pt_tz, et_tz = pytz.timezone('US/Pacific'), pytz.timezone('US/Eastern')
+    
+    # Load 2024 sales data
+    df_2024 = pd.read_csv('2024_Bamboo_Data.csv')
+    df_2024['Datetime_PT'] = pd.to_datetime(df_2024['Date'] + ' ' + df_2024['Time'])
+    df_2024['Datetime_ET'] = df_2024['Datetime_PT'].dt.tz_localize(pt_tz).dt.tz_convert(et_tz)
+    df_2024['Date'] = df_2024['Datetime_ET'].dt.date
+    df_2024['Day_of_Week'] = df_2024['Datetime_ET'].dt.day_name()
+    df_2024['Gross Sales'] = df_2024['Gross Sales'].replace(r'[\$,]', '', regex=True).astype(float)
+    df_2024['Qty'] = pd.to_numeric(df_2024['Qty'], errors='coerce').fillna(0)
     
     # Load 2025 sales data
     df_2025 = pd.read_csv('2025_Bamboo_Data.csv')
@@ -41,7 +50,11 @@ def load_all_data():
     df_feb_2026['Qty'] = pd.to_numeric(df_feb_2026['Qty'], errors='coerce').fillna(0)
     
     # Combine sales data
-    df = pd.concat([df_2025, df_jan_2026, df_feb_2026], ignore_index=True)
+    df = pd.concat([df_2024, df_2025, df_jan_2026, df_feb_2026], ignore_index=True)
+    
+    # Load 2024 weather data
+    weather_2024 = pd.read_csv('camp_hill_2024_weather.csv')
+    weather_2024['Date'] = pd.to_datetime(weather_2024['Date']).dt.date
     
     # Load 2025 weather data
     weather_2025 = pd.read_csv('camp_hill_2025_weather.csv')
@@ -56,7 +69,7 @@ def load_all_data():
     weather_feb_2026['Date'] = pd.to_datetime(weather_feb_2026['Date']).dt.date
     
     # Combine weather data
-    weather = pd.concat([weather_2025, weather_jan_2026, weather_feb_2026], ignore_index=True)
+    weather = pd.concat([weather_2024, weather_2025, weather_jan_2026, weather_feb_2026], ignore_index=True)
     
     return df, weather
 
