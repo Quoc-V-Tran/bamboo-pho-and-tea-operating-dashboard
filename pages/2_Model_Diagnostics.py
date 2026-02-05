@@ -185,6 +185,10 @@ try:
     # Interaction: 2026 × Friday (Test if Navy base effect strengthened in 2026)
     merged['is_2026_friday'] = (merged['is_2026'] * merged['is_weekly_friday']).astype(int)
     
+    # Monthly Liquidity Cycle
+    merged['is_pre_rent_surge'] = merged['Date_dt'].dt.day.isin([28, 29, 30, 31]).astype(int)
+    merged['is_post_rent_dip'] = merged['Date_dt'].dt.day.isin([2, 3, 4, 5]).astype(int)
+    
     # Prepare model data (exclude Mondays and zero sales)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -195,11 +199,11 @@ try:
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run payday-focused OLS regression with year controls
+    # Run model with payday, liquidity cycle, and year controls
     # Note: is_clear is baseline for precipitation, 2026 is baseline for year
     X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                  'is_2024', 'is_2025', 'is_2026_friday']]
+                  'is_2024', 'is_2025', 'is_2026_friday', 'is_pre_rent_surge', 'is_post_rent_dip']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -338,7 +342,9 @@ try:
             (ols_model.params['is_semi_monthly_weekend'] * recent_df['is_semi_monthly_weekend']) +
             (ols_model.params['is_2024'] * recent_df['is_2024']) +
             (ols_model.params['is_2025'] * recent_df['is_2025']) +
-            (ols_model.params['is_2026_friday'] * recent_df['is_2026_friday'])
+            (ols_model.params['is_2026_friday'] * recent_df['is_2026_friday']) +
+            (ols_model.params['is_pre_rent_surge'] * recent_df['is_pre_rent_surge']) +
+            (ols_model.params['is_post_rent_dip'] * recent_df['is_post_rent_dip'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -399,7 +405,7 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (Baseline: 2026, Tue-Thu, Clear, {mean_temp:.1f}°F)',
+        'const': f'Intercept (Baseline: 2026, Tue-Thu, Clear, {mean_temp:.1f}°F, Mid-month)',
         'Temp_Centered': 'Temperature (centered)',
         'is_weekend': 'Weekend (Sat/Sun only)',
         'is_rain': 'Rain/Mixed (vs Clear)',
@@ -411,7 +417,9 @@ try:
         'is_semi_monthly_weekend': 'Semi-Monthly × Weekend (interaction)',
         'is_2024': 'Year 2024 (vs 2026 baseline)',
         'is_2025': 'Year 2025 (vs 2026 baseline)',
-        'is_2026_friday': '2026 × Friday (Navy base effect strengthening)'
+        'is_2026_friday': '2026 × Friday (Navy base effect strengthening)',
+        'is_pre_rent_surge': 'Pre-Rent Surge (Days 28-31, end-of-month spending)',
+        'is_post_rent_dip': 'Post-Rent Dip (Days 2-5, post-rent constraint)'
     }
     
     for var in params.index:
