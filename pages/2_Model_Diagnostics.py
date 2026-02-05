@@ -188,11 +188,120 @@ try:
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
     
-    # Calculate MAE
+    # Calculate MAE and predictions
     mae = (y - ols_model.predict(X)).abs().mean()
+    model_df['Predicted'] = ols_model.predict(X)
+    model_df['Error'] = model_df['Bowls_Sold'] - model_df['Predicted']
+    model_df['Error_Pct'] = (model_df['Error'] / model_df['Bowls_Sold'] * 100).abs()
+    
+    # --- MODEL PERFORMANCE SUMMARY ---
+    st.subheader("📊 Model Performance Summary")
+    
+    stat_col1, stat_col2, stat_col3 = st.columns(3)
+    
+    with stat_col1:
+        st.markdown("**Fit Metrics**")
+        st.metric("R²", f"{ols_model.rsquared:.3f}",
+                 help="Variance explained")
+        st.metric("Adj. R²", f"{ols_model.rsquared_adj:.3f}")
+        st.metric("MAE", f"{mae:.2f} bowls",
+                 help="Mean Absolute Error")
+        st.metric("F-stat", f"{ols_model.fvalue:.1f}",
+                 help="Model significance")
+    
+    with stat_col2:
+        st.markdown("**Core Effects**")
+        st.metric("🌡️ Temp", f"{ols_model.params['Temp_Centered']:.2f}/°F")
+        st.metric("📅 Weekend", f"+{ols_model.params['is_weekend']:.1f}")
+        st.metric("🌧️ Rain", f"{ols_model.params['is_rain']:+.1f}")
+        st.metric("❄️ Snow", f"{ols_model.params['is_snow']:+.1f}")
+    
+    with stat_col3:
+        st.markdown("**Payday Effects**")
+        st.metric("📆 Fri", f"+{ols_model.params['is_weekly_friday']:.1f}",
+                 help="General Friday payday")
+        st.metric("💰 15th/Last", f"+{ols_model.params['is_semi_monthly']:.1f}",
+                 help="Semi-monthly paydays")
+        st.metric("💰×📅", f"+{ols_model.params['is_semi_monthly_weekend']:.1f}",
+                 help="Semi-monthly × Weekend")
+    
+    st.divider()
+    
+    # --- ACTUAL VS PREDICTED (ALL HISTORICAL DATA) ---
+    st.subheader("📈 Model Fit: Actual vs Predicted Bowls")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Scatter plot: Actual vs Predicted
+        fig_scatter = go.Figure()
+        
+        # Add scatter points colored by error percentage
+        fig_scatter.add_trace(go.Scatter(
+            x=model_df['Predicted'],
+            y=model_df['Bowls_Sold'],
+            mode='markers',
+            marker=dict(
+                size=8,
+                color=model_df['Error_Pct'],
+                colorscale='RdYlGn_r',  # Red = high error, Green = low error
+                showscale=True,
+                colorbar=dict(title="Error %"),
+                line=dict(width=0.5, color='white')
+            ),
+            text=[f"Date: {d}<br>Actual: {a:.0f}<br>Predicted: {p:.0f}<br>Error: {e:.1f}%" 
+                  for d, a, p, e in zip(model_df['Date'], model_df['Bowls_Sold'], 
+                                       model_df['Predicted'], model_df['Error_Pct'])],
+            hovertemplate='%{text}<extra></extra>',
+            name='Data Points'
+        ))
+        
+        # Add perfect prediction line (y = x)
+        min_val = min(model_df['Predicted'].min(), model_df['Bowls_Sold'].min())
+        max_val = max(model_df['Predicted'].max(), model_df['Bowls_Sold'].max())
+        fig_scatter.add_trace(go.Scatter(
+            x=[min_val, max_val],
+            y=[min_val, max_val],
+            mode='lines',
+            line=dict(color='black', width=2, dash='dash'),
+            name='Perfect Fit (y=x)'
+        ))
+        
+        fig_scatter.update_layout(
+            xaxis_title='Predicted Bowls',
+            yaxis_title='Actual Bowls',
+            template='simple_white',
+            hovermode='closest',
+            height=500
+        )
+        
+        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.caption("📊 Points on the diagonal line = perfect predictions. Color shows error magnitude.")
+    
+    with col2:
+        st.markdown("### Error Distribution")
+        
+        # Error distribution
+        within_5pct = (model_df['Error_Pct'] <= 5).sum()
+        within_10pct = (model_df['Error_Pct'] <= 10).sum()
+        within_20pct = (model_df['Error_Pct'] <= 20).sum()
+        total = len(model_df)
+        
+        st.metric("Within 5% Error", f"{within_5pct} days ({100*within_5pct/total:.0f}%)")
+        st.metric("Within 10% Error", f"{within_10pct} days ({100*within_10pct/total:.0f}%)")
+        st.metric("Within 20% Error", f"{within_20pct} days ({100*within_20pct/total:.0f}%)")
+        
+        st.markdown("---")
+        
+        st.metric("Mean Absolute Error", f"{mae:.1f} bowls")
+        
+        st.metric("RMSE", f"{np.sqrt(ols_model.mse_resid):.1f} bowls",
+                 help="Root Mean Squared Error")
+    
+    st.divider()
     
     # --- ACTUAL VS PREDICTED (Recent Days) ---
-    st.subheader("🎯 Model Performance: Actual vs Predicted")
+    st.subheader("🎯 Recent Days: Actual vs Predicted")
     
     # Get recent operating days (last 7 days with sales, excluding Mondays)
     recent_df = model_df.tail(14).copy()  # Get more to ensure we have enough after filtering
