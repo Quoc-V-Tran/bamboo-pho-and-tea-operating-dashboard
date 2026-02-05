@@ -223,21 +223,21 @@ try:
         st.subheader("Enter Tomorrow's Forecast")
         tomorrow_temp = st.number_input("Temperature (°F)", min_value=0, max_value=100, value=35, step=1)
         
-        st.markdown("**🌤️ Weather Conditions**")
+        st.markdown("**🌤️ Weather & Day Type**")
         col_a, col_b = st.columns(2)
         with col_a:
             tomorrow_is_weekend = st.checkbox("Weekend (Sat/Sun)", value=False)
             tomorrow_is_rain = st.checkbox("Rain/Mixed", value=False)
         with col_b:
-            tomorrow_is_weekly_friday = st.checkbox("Friday (General Payday)", value=False)
             tomorrow_is_snow = st.checkbox("Snow/Flurries", value=False)
         
         st.markdown("**💰 Payday Events**")
         col_c, col_d = st.columns(2)
         with col_c:
+            tomorrow_is_weekly_friday = st.checkbox("Friday (General Payday)", value=False)
             tomorrow_is_semi_monthly = st.checkbox("Semi-Monthly (15th or Last Day)", value=False)
-            tomorrow_is_fed_payday = st.checkbox("Federal Payday Friday", value=False, help="Bi-weekly NSA")
         with col_d:
+            tomorrow_is_fed_payday = st.checkbox("Federal Payday Friday", value=False, help="Bi-weekly NSA")
             tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after)", value=False)
         
         # Center tomorrow's temperature
