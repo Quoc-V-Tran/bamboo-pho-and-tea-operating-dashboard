@@ -96,8 +96,10 @@ try:
     # Weekend binary (Saturday and Sunday only)
     merged['is_weekend'] = merged['Day_of_Week'].isin(['Saturday', 'Sunday']).astype(int)
     
-    # Mixed precipitation
-    merged['is_mixed_precip'] = (merged['Precip_Type'] == 'Mixed').astype(int)
+    # Precipitation type binaries (3 categories)
+    merged['is_clear'] = (merged['Precip_Type'].isin(['None', 'Clear'])).astype(int)
+    merged['is_rain'] = (merged['Precip_Type'].isin(['Rain', 'Mixed'])).astype(int)
+    merged['is_snow'] = (merged['Precip_Type'].isin(['Snow', 'Flurries', 'Heavy Snow'])).astype(int)
     
     # Naval Base Traffic Effects
     merged['Date_dt'] = pd.to_datetime(merged['Date'])
@@ -179,7 +181,8 @@ try:
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
     # Run simplified payday-focused OLS regression
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 
+    # Note: is_clear is the baseline (omitted) category for precipitation
+    X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
@@ -201,7 +204,8 @@ try:
             ols_model.params['const'] + 
             (ols_model.params['Temp_Centered'] * recent_df['Temp_Centered']) +
             (ols_model.params['is_weekend'] * recent_df['is_weekend']) +
-            (ols_model.params['is_mixed_precip'] * recent_df['is_mixed_precip']) +
+            (ols_model.params['is_rain'] * recent_df['is_rain']) +
+            (ols_model.params['is_snow'] * recent_df['is_snow']) +
             (ols_model.params['is_federal_payday'] * recent_df['is_federal_payday']) +
             (ols_model.params['is_payday_weekend'] * recent_df['is_payday_weekend']) +
             (ols_model.params['is_weekly_friday'] * recent_df['is_weekly_friday']) +
@@ -267,10 +271,11 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (Baseline: Tue-Thu, Clear, {mean_temp:.1f}°F)',
+        'const': f'Intercept (Baseline: Tue-Thu, Clear Weather, {mean_temp:.1f}°F)',
         'Temp_Centered': 'Temperature (centered)',
         'is_weekend': 'Weekend (Sat/Sun only)',
-        'is_mixed_precip': 'Mixed Precipitation',
+        'is_rain': 'Rain/Mixed (vs Clear)',
+        'is_snow': 'Snow/Flurries/Heavy (vs Clear)',
         'is_federal_payday': 'Federal Payday Friday (bi-weekly, NSA)',
         'is_payday_weekend': 'Payday Weekend (Sat/Sun after federal payday)',
         'is_weekly_friday': 'Weekly Friday (General Payday)',
@@ -350,7 +355,7 @@ try:
                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     st.plotly_chart(fig, use_container_width=True)
     
-    st.caption("📊 Baseline relationships shown. Simplified payday-focused model includes 8 features: Temp, Weekend(Sat/Sun), Mixed Precip, Federal Payday (bi-weekly), Payday Weekend, Weekly Friday, Semi-Monthly (15th/Last), and Semi-Monthly×Weekend interaction.")
+    st.caption("📊 Baseline relationships shown. Simplified payday-focused model includes 9 features: Temp, Weekend(Sat/Sun), Rain (vs Clear), Snow (vs Clear), Federal Payday (bi-weekly), Payday Weekend, Weekly Friday, Semi-Monthly (15th/Last), and Semi-Monthly×Weekend interaction.")
 
 except Exception as e:
     st.error(f"Model Diagnostics Error: {e}")

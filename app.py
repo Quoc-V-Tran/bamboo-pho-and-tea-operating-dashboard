@@ -90,8 +90,10 @@ try:
     # Weekend binary (Saturday and Sunday ONLY - Friday is separate for base traffic)
     merged['is_weekend'] = merged['Day_of_Week'].isin(['Saturday', 'Sunday']).astype(int)
     
-    # Mixed precipitation dummy
-    merged['is_mixed_precip'] = (merged['Precip_Type'] == 'Mixed').astype(int)
+    # Precipitation type binaries (3 categories)
+    merged['is_clear'] = (merged['Precip_Type'].isin(['None', 'Clear'])).astype(int)
+    merged['is_rain'] = (merged['Precip_Type'].isin(['Rain', 'Mixed'])).astype(int)
+    merged['is_snow'] = (merged['Precip_Type'].isin(['Snow', 'Flurries', 'Heavy Snow'])).astype(int)
     
     # Naval Base (NSA Mechanicsburg) Traffic Effects
     merged['Date_dt'] = pd.to_datetime(merged['Date'])
@@ -163,9 +165,10 @@ try:
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
     # --- BUILD SIMPLIFIED PAYDAY-FOCUSED MODEL ---
-    # Bowls_Sold ~ Temp + Weekend(Sat/Sun) + Mixed + Federal_Payday + Payday_Weekend + 
+    # Bowls_Sold ~ Temp + Weekend(Sat/Sun) + Rain + Snow + Federal_Payday + Payday_Weekend + 
     #              Weekly_Friday + Semi_Monthly + Semi_Monthly×Weekend
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 
+    # Note: is_clear is the baseline (omitted) category for precipitation
+    X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
@@ -188,18 +191,20 @@ try:
         st.subheader("Enter Tomorrow's Forecast")
         tomorrow_temp = st.number_input("Temperature (°F)", min_value=0, max_value=100, value=35, step=1)
         
+        st.markdown("**🌤️ Weather Conditions**")
         col_a, col_b = st.columns(2)
         with col_a:
             tomorrow_is_weekend = st.checkbox("Weekend (Sat/Sun)", value=False)
-            tomorrow_is_mixed = st.checkbox("Mixed Precip", value=False)
+            tomorrow_is_rain = st.checkbox("Rain/Mixed", value=False)
         with col_b:
             tomorrow_is_weekly_friday = st.checkbox("Friday (General Payday)", value=False)
-            tomorrow_is_semi_monthly = st.checkbox("Semi-Monthly (15th or Last Day)", value=False)
+            tomorrow_is_snow = st.checkbox("Snow/Flurries", value=False)
         
-        st.markdown("**🏛️ Federal Payday (NSA Mechanicsburg)**")
+        st.markdown("**💰 Payday Events**")
         col_c, col_d = st.columns(2)
         with col_c:
-            tomorrow_is_fed_payday = st.checkbox("Federal Payday Friday", value=False, help="Bi-weekly")
+            tomorrow_is_semi_monthly = st.checkbox("Semi-Monthly (15th or Last Day)", value=False)
+            tomorrow_is_fed_payday = st.checkbox("Federal Payday Friday", value=False, help="Bi-weekly NSA")
         with col_d:
             tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after)", value=False)
         
@@ -212,7 +217,8 @@ try:
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
                         (ols_model.params['is_weekend'] * (1 if tomorrow_is_weekend else 0)) +
-                        (ols_model.params['is_mixed_precip'] * (1 if tomorrow_is_mixed else 0)) +
+                        (ols_model.params['is_rain'] * (1 if tomorrow_is_rain else 0)) +
+                        (ols_model.params['is_snow'] * (1 if tomorrow_is_snow else 0)) +
                         (ols_model.params['is_federal_payday'] * (1 if tomorrow_is_fed_payday else 0)) +
                         (ols_model.params['is_payday_weekend'] * (1 if tomorrow_is_payday_wknd else 0)) +
                         (ols_model.params['is_weekly_friday'] * (1 if tomorrow_is_weekly_friday else 0)) +
@@ -221,7 +227,7 @@ try:
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Payday-focused model with 8 features (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Payday-focused model with 9 features (Mean temp: {mean_temp:.1f}°F)")
     
     with pred_col2:
         st.subheader("📊 Model Performance")
@@ -242,7 +248,8 @@ try:
             st.markdown("**Core Effects**")
             st.metric("🌡️ Temp", f"{ols_model.params['Temp_Centered']:.2f}/°F")
             st.metric("📅 Weekend", f"+{ols_model.params['is_weekend']:.1f}")
-            st.metric("🌧️ Mixed", f"+{ols_model.params['is_mixed_precip']:.1f}")
+            st.metric("🌧️ Rain", f"{ols_model.params['is_rain']:+.1f}")
+            st.metric("❄️ Snow", f"{ols_model.params['is_snow']:+.1f}")
         
         with stat_col3:
             st.markdown("**Payday Effects**")
