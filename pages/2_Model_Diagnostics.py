@@ -492,10 +492,10 @@ try:
     st.subheader("🌡️ Temperature vs Bowls Sold")
     
     # Create scatter plot colored by weekend vs midweek
-    model_df['Day_Type'] = model_df['is_weekend'].apply(lambda x: 'Weekend (Sat/Sun)' if x == 1 else 'Midweek (Tue-Thu)')
+    model_df['Day_Type'] = model_df['is_weekend'].apply(lambda x: 'Weekend (Fri/Sat/Sun)' if x == 1 else 'Midweek (Tue-Thu)')
     
     fig = px.scatter(model_df, x='Temp_High', y='Bowls_Sold', color='Day_Type',
-                     color_discrete_map={'Weekend (Sat/Sun)': '#DAA520', 'Midweek (Tue-Thu)': '#1E88E5'},
+                     color_discrete_map={'Weekend (Fri/Sat/Sun)': '#DAA520', 'Midweek (Tue-Thu)': '#1E88E5'},
                      hover_data=['Date', 'Day_of_Week', 'Precip_Type'],
                      labels={'Temp_High': 'Temperature (°F)', 'Bowls_Sold': 'Bowls Sold'})
     
@@ -504,7 +504,7 @@ try:
     temp_range_cold = np.minimum(temp_range, best_kink)
     temp_range_hot = np.maximum(0, temp_range - best_kink)
     
-    # Weekend line (Sat/Sun, no special events)
+    # Weekend line (Fri/Sat/Sun, no special events)
     y_weekend = (ols_model.params['const'] + 
                  (ols_model.params['temp_cold'] * temp_range_cold) + 
                  (ols_model.params['temp_hot'] * temp_range_hot) + 
@@ -524,7 +524,7 @@ try:
                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     st.plotly_chart(fig, use_container_width=True)
     
-    st.caption(f"📊 Baseline relationships shown. Piecewise temperature model with kink at {best_kink}°F. Lines show 'hockey stick' pattern: flat below kink, steep decline above. Model includes 14 features.")
+    st.caption(f"📊 Baseline relationships shown. Piecewise temperature model with kink at {best_kink}°F. Lines show 'hockey stick' pattern: flat below kink, steep decline above. Weekend (Fri/Sat/Sun) vs Midweek (Tue-Thu). Model includes 10 features.")
 
 except Exception as e:
     st.error(f"Model Diagnostics Error: {e}")
