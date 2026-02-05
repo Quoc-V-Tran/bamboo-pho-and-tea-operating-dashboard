@@ -79,7 +79,6 @@ try:
     sales_df, merged = load_all_data()
     
     # --- FEATURE ENGINEERING ---
-    merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
     
     # Prepare model data
     model_df = merged[
@@ -87,12 +86,19 @@ try:
         (merged['Bowls_Sold'] > 0)
     ].copy()
     
+    # Day of week dummies (Tuesday = reference category)
+    model_df['is_wednesday'] = (model_df['Day_of_Week'] == 'Wednesday').astype(int)
+    model_df['is_thursday'] = (model_df['Day_of_Week'] == 'Thursday').astype(int)
+    model_df['is_friday'] = (model_df['Day_of_Week'] == 'Friday').astype(int)
+    model_df['is_saturday'] = (model_df['Day_of_Week'] == 'Saturday').astype(int)
+    model_df['is_sunday'] = (model_df['Day_of_Week'] == 'Sunday').astype(int)
+    
     # Center temperature
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run Simple, Parsimonious OLS regression (only significant features)
-    X = model_df[['Temp_Centered', 'is_weekend']]
+    # Run OLS regression with day-of-week effects
+    X = model_df[['Temp_Centered', 'is_wednesday', 'is_thursday', 'is_friday', 'is_saturday', 'is_sunday']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -109,7 +115,11 @@ try:
         recent_df['Predicted'] = (
             ols_model.params['const'] + 
             (ols_model.params['Temp_Centered'] * recent_df['Temp_Centered']) +
-            (ols_model.params['is_weekend'] * recent_df['is_weekend'])
+            (ols_model.params['is_wednesday'] * recent_df['is_wednesday']) +
+            (ols_model.params['is_thursday'] * recent_df['is_thursday']) +
+            (ols_model.params['is_friday'] * recent_df['is_friday']) +
+            (ols_model.params['is_saturday'] * recent_df['is_saturday']) +
+            (ols_model.params['is_sunday'] * recent_df['is_sunday'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -170,9 +180,13 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (at {mean_temp:.1f}°F avg temp)',
+        'const': f'Intercept (Tuesday at {mean_temp:.1f}°F)',
         'Temp_Centered': 'Temperature (centered)',
-        'is_weekend': 'Weekend (Fri/Sat/Sun)'
+        'is_wednesday': 'Wednesday (vs Tuesday)',
+        'is_thursday': 'Thursday (vs Tuesday)',
+        'is_friday': 'Friday (vs Tuesday)',
+        'is_saturday': 'Saturday (vs Tuesday)',
+        'is_sunday': 'Sunday (vs Tuesday)'
     }
     
     for var in params.index:
@@ -215,45 +229,46 @@ try:
     
     st.divider()
 
-    # --- SCATTER PLOT WITH REGRESSION LINES ---
-    st.subheader("🌡️ Temperature vs Bowls Sold (Operating Days Only)")
+    # --- SCATTER PLOT WITH REGRESSION LINES BY DAY ---
+    st.subheader("🌡️ Temperature vs Bowls Sold by Day of Week")
     
-    # Create scatter plot colored by weekend vs midweek
-    model_df['Day_Type'] = model_df['is_weekend'].apply(lambda x: 'Weekend (Fri/Sat/Sun)' if x == 1 else 'Midweek (Tue/Wed/Thu)')
-    
-    fig = px.scatter(model_df, x='Temp_High', y='Bowls_Sold', color='Day_Type',
+    # Create scatter plot colored by day of week
+    fig = px.scatter(model_df, x='Temp_High', y='Bowls_Sold', color='Day_of_Week',
                      color_discrete_map={
-                         'Weekend (Fri/Sat/Sun)': '#DAA520',
-                         'Midweek (Tue/Wed/Thu)': '#1E88E5'
+                         'Tuesday': '#8B4513',
+                         'Wednesday': '#D2691E',
+                         'Thursday': '#CD853F',
+                         'Friday': '#DAA520',
+                         'Saturday': '#FFD700',
+                         'Sunday': '#FFA500'
                      },
-                     hover_data=['Date', 'Day_of_Week'],
+                     hover_data=['Date'],
                      labels={'Temp_High': 'Temperature (°F)', 'Bowls_Sold': 'Bowls Sold'})
     
-    # Regression Lines
+    # Regression Lines for each day
     temp_range = np.linspace(model_df['Temp_High'].min(), model_df['Temp_High'].max(), 100)
-    temp_range_centered = temp_range - mean_temp  # Center for model prediction
+    temp_range_centered = temp_range - mean_temp
     
-    # Weekend regression line
-    y_weekend = (ols_model.params['const'] + 
-                (ols_model.params['Temp_Centered'] * temp_range_centered) + 
-                (ols_model.params['is_weekend'] * 1))
+    days = [
+        ('Tuesday', 0, '#8B4513', 'solid'),
+        ('Wednesday', ols_model.params['is_wednesday'], '#D2691E', 'dash'),
+        ('Thursday', ols_model.params['is_thursday'], '#CD853F', 'dot'),
+        ('Friday', ols_model.params['is_friday'], '#DAA520', 'dashdot'),
+        ('Saturday', ols_model.params['is_saturday'], '#FFD700', 'solid'),
+        ('Sunday', ols_model.params['is_sunday'], '#FFA500', 'dash')
+    ]
     
-    # Midweek regression line
-    y_midweek = (ols_model.params['const'] + 
-                (ols_model.params['Temp_Centered'] * temp_range_centered))
-
-    # Plot regression lines
-    fig.add_trace(go.Scatter(x=temp_range, y=y_weekend, name='Weekend Trend', 
-                            line=dict(color='#DAA520', width=4), mode='lines'))
-    fig.add_trace(go.Scatter(x=temp_range, y=y_midweek, name='Midweek Trend', 
-                            line=dict(color='#1E88E5', width=4, dash='dash'), mode='lines'))
+    for day_name, day_effect, color, dash_style in days:
+        y_day = ols_model.params['const'] + (ols_model.params['Temp_Centered'] * temp_range_centered) + day_effect
+        fig.add_trace(go.Scatter(x=temp_range, y=y_day, name=f'{day_name} Trend',
+                                line=dict(color=color, width=3, dash=dash_style), mode='lines'))
     
     fig.update_traces(marker=dict(size=10, opacity=0.6))
-    fig.update_layout(template="simple_white", hovermode="closest", 
+    fig.update_layout(template="simple_white", hovermode="closest",
                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     st.plotly_chart(fig, use_container_width=True)
     
-    st.caption("📊 Simple linear model: Higher temperature = Fewer bowls sold (people want warm pho when it's cold!)")
+    st.caption("📊 Each day has its own parallel trend line (temperature effect is the same, but baseline differs by day)")
 
 except Exception as e:
     st.error(f"Model Diagnostics Error: {e}")

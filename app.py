@@ -74,14 +74,19 @@ try:
     
     # --- FEATURE ENGINEERING ---
     
-    # Binary feature: Weekend (Fri, Sat, Sun)
-    merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
-    
     # Filter for active days only (Exclude Mondays/zeros)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
         (merged['Bowls_Sold'] > 0)
     ].copy()
+    
+    # Day of week dummies (Tuesday = reference category)
+    # This shows how each day performs relative to Tuesday
+    model_df['is_wednesday'] = (model_df['Day_of_Week'] == 'Wednesday').astype(int)
+    model_df['is_thursday'] = (model_df['Day_of_Week'] == 'Thursday').astype(int)
+    model_df['is_friday'] = (model_df['Day_of_Week'] == 'Friday').astype(int)
+    model_df['is_saturday'] = (model_df['Day_of_Week'] == 'Saturday').astype(int)
+    model_df['is_sunday'] = (model_df['Day_of_Week'] == 'Sunday').astype(int)
     
     # Center temperature variable (subtract mean)
     mean_temp = model_df['Temp_High'].mean()
@@ -96,11 +101,11 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD SIMPLE, PARSIMONIOUS MODEL ---
-    # Bowls_Sold ~ Intercept + Temp_Centered + is_weekend
-    # Note: Temperature is centered (mean subtracted) so intercept = predicted bowls at average temp
-    # Only statistically significant features included (p < 0.05)
-    X = model_df[['Temp_Centered', 'is_weekend']]
+    # --- BUILD MODEL WITH DAY-OF-WEEK EFFECTS ---
+    # Bowls_Sold ~ Intercept + Temp_Centered + Day_of_Week_Dummies
+    # Note: Temperature is centered (mean subtracted) so intercept = Tuesday at average temp
+    # Tuesday is the reference day (coefficients show difference from Tuesday)
+    X = model_df[['Temp_Centered', 'is_wednesday', 'is_thursday', 'is_friday', 'is_saturday', 'is_sunday']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -113,39 +118,53 @@ try:
     with pred_col1:
         st.subheader("Enter Tomorrow's Forecast")
         tomorrow_temp = st.number_input("Temperature (°F)", min_value=0, max_value=100, value=35, step=1)
-        tomorrow_is_weekend = st.checkbox("Weekend Day (Fri-Sun)", value=False)
+        tomorrow_day = st.selectbox("Day of Week", 
+                                    ["Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+                                    index=4)  # Default to Saturday
         
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
         
-        # Calculate prediction (Simple Model: Temperature + Weekend)
+        # Calculate prediction based on day of week
+        day_effect = 0
+        if tomorrow_day == "Wednesday":
+            day_effect = ols_model.params['is_wednesday']
+        elif tomorrow_day == "Thursday":
+            day_effect = ols_model.params['is_thursday']
+        elif tomorrow_day == "Friday":
+            day_effect = ols_model.params['is_friday']
+        elif tomorrow_day == "Saturday":
+            day_effect = ols_model.params['is_saturday']
+        elif tomorrow_day == "Sunday":
+            day_effect = ols_model.params['is_sunday']
+        # Tuesday = 0 (reference)
+        
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
-                        (ols_model.params['is_weekend'] * (1 if tomorrow_is_weekend else 0)))
+                        day_effect)
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Parsimonious OLS model with 2 features (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Model with day-of-week effects (Tuesday = reference, Mean temp: {mean_temp:.1f}°F)")
     
     with pred_col2:
         st.subheader("📊 Historical Stats & Model Coefficients")
         
-        stat_col1, stat_col2, stat_col3 = st.columns(3)
+        stat_col1, stat_col2 = st.columns(2)
         
         with stat_col1:
             avg_bowls = model_df['Bowls_Sold'].mean()
             st.metric("Avg Daily Bowls", f"{avg_bowls:.1f}")
             st.metric("Total Bowls", f"{int(model_df['Bowls_Sold'].sum())}")
+            st.metric("Model R²", f"{ols_model.rsquared:.3f}",
+                     help="Proportion of variance explained")
         
         with stat_col2:
             st.metric("🌡️ Temp Effect", f"{ols_model.params['Temp_Centered']:.2f}/°F",
                      help="Colder weather = More pho!")
-            st.metric("📅 Weekend Lift", f"+{ols_model.params['is_weekend']:.1f} bowls",
-                     help="Fri/Sat/Sun boost")
-        
-        with stat_col3:
-            st.metric("Model R²", f"{ols_model.rsquared:.3f}",
-                     help="Proportion of variance explained")
+            st.metric("🏆 Best Day", 
+                     f"{max([('Wed', ols_model.params['is_wednesday']), ('Thu', ols_model.params['is_thursday']), ('Fri', ols_model.params['is_friday']), ('Sat', ols_model.params['is_saturday']), ('Sun', ols_model.params['is_sunday'])], key=lambda x: x[1])[0]}",
+                     help="Day with highest sales vs Tuesday")
             st.metric("Adj. R²", f"{ols_model.rsquared_adj:.3f}",
                      help="Adjusted for # of predictors")
 
