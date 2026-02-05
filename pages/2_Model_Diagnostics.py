@@ -107,20 +107,22 @@ try:
     merged['is_rain'] = (merged['Precip_Type'].isin(['Rain', 'Mixed'])).astype(int)
     merged['is_snow'] = (merged['Precip_Type'].isin(['Snow', 'Flurries', 'Heavy Snow'])).astype(int)
     
-    # Month dummy variables (January is baseline/reference)
+    # Seasonality: Consolidated season impact variable
     merged['Date_dt'] = pd.to_datetime(merged['Date'])
     merged['month'] = merged['Date_dt'].dt.month
-    merged['is_feb'] = (merged['month'] == 2).astype(int)
-    merged['is_mar'] = (merged['month'] == 3).astype(int)
-    merged['is_apr'] = (merged['month'] == 4).astype(int)
-    merged['is_may'] = (merged['month'] == 5).astype(int)
-    merged['is_jun'] = (merged['month'] == 6).astype(int)
-    merged['is_jul'] = (merged['month'] == 7).astype(int)
-    merged['is_aug'] = (merged['month'] == 8).astype(int)
-    merged['is_sep'] = (merged['month'] == 9).astype(int)
-    merged['is_oct'] = (merged['month'] == 10).astype(int)
-    merged['is_nov'] = (merged['month'] == 11).astype(int)
-    merged['is_dec'] = (merged['month'] == 12).astype(int)
+    
+    # High Demand months: Jan, Feb, Nov, Dec (+1)
+    # Low Demand months: April, June (-1)
+    # Neutral: All other months (0)
+    def get_season_impact(month):
+        if month in [1, 2, 11, 12]:  # High demand (winter/holiday)
+            return 1
+        elif month in [4, 6]:  # Low demand (spring/early summer)
+            return -1
+        else:  # Neutral (Mar, May, Jul, Aug, Sep, Oct)
+            return 0
+    
+    merged['season_impact'] = merged['month'].apply(get_season_impact)
     
     # Naval Base Traffic Effects
     merged['Date_dt'] = pd.to_datetime(merged['Date'])
@@ -200,48 +202,6 @@ try:
     # Interaction: 2026 × Friday (Test if Navy base effect strengthened in 2026)
     merged['is_2026_friday'] = (merged['is_2026'] * merged['is_weekly_friday']).astype(int)
     
-    # --- SCHOOL HOLIDAY EFFECT ---
-    # Define school holiday ranges (when families have time off)
-    school_holidays = [
-        # Winter Break
-        ('2023-12-22', '2024-01-01'),
-        ('2024-12-23', '2025-01-01'),
-        ('2025-12-24', '2026-01-02'),
-        # Spring Break
-        ('2024-03-28', '2024-04-01'),
-        ('2025-04-14', '2025-04-21'),
-        ('2026-03-20', '2026-03-24'),
-        # Thanksgiving Break
-        ('2023-11-23', '2023-11-27'),
-        ('2024-11-28', '2024-12-02'),
-        ('2025-11-27', '2025-11-28'),
-    ]
-    
-    # Single day holidays
-    single_day_holidays = [
-        # MLK Day
-        '2024-01-15', '2025-01-20', '2026-01-19',
-        # Presidents' Day
-        '2024-02-19', '2025-02-17', '2026-02-16',
-        # Memorial Day
-        '2024-05-27', '2025-05-26', '2026-05-25',
-        # Labor Day
-        '2024-09-02', '2025-09-01', '2026-09-07',
-    ]
-    
-    # Initialize column
-    merged['is_school_holiday'] = 0
-    
-    # Mark date ranges
-    for start, end in school_holidays:
-        date_range = pd.date_range(start=start, end=end, freq='D')
-        merged.loc[merged['Date_dt'].isin(date_range), 'is_school_holiday'] = 1
-    
-    # Mark single days
-    for date_str in single_day_holidays:
-        date_obj = pd.to_datetime(date_str).date()
-        merged.loc[merged['Date'] == date_obj, 'is_school_holiday'] = 1
-    
     # Prepare model data (exclude Mondays and zero sales)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -252,11 +212,11 @@ try:
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # --- BUILD MODEL WITH PAYDAY + SCHOOL HOLIDAY + MONTH + YEAR CONTROLS ---
+    # --- BUILD SIMPLIFIED ROBUST MODEL ---
+    # Season_Impact: High Demand (+1) = Jan/Feb/Nov/Dec, Low Demand (-1) = Apr/Jun, Neutral (0) = others
     X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                  'is_2024', 'is_2025', 'is_2026_friday', 'is_school_holiday',
-                  'is_feb', 'is_mar', 'is_apr', 'is_may', 'is_jun', 'is_jul', 'is_aug', 'is_sep', 'is_oct', 'is_nov', 'is_dec']]
+                  'is_2024', 'is_2025', 'is_2026_friday', 'season_impact']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -396,18 +356,7 @@ try:
             (ols_model.params['is_2024'] * recent_df['is_2024']) +
             (ols_model.params['is_2025'] * recent_df['is_2025']) +
             (ols_model.params['is_2026_friday'] * recent_df['is_2026_friday']) +
-            (ols_model.params['is_school_holiday'] * recent_df['is_school_holiday']) +
-            (ols_model.params['is_feb'] * recent_df['is_feb']) +
-            (ols_model.params['is_mar'] * recent_df['is_mar']) +
-            (ols_model.params['is_apr'] * recent_df['is_apr']) +
-            (ols_model.params['is_may'] * recent_df['is_may']) +
-            (ols_model.params['is_jun'] * recent_df['is_jun']) +
-            (ols_model.params['is_jul'] * recent_df['is_jul']) +
-            (ols_model.params['is_aug'] * recent_df['is_aug']) +
-            (ols_model.params['is_sep'] * recent_df['is_sep']) +
-            (ols_model.params['is_oct'] * recent_df['is_oct']) +
-            (ols_model.params['is_nov'] * recent_df['is_nov']) +
-            (ols_model.params['is_dec'] * recent_df['is_dec'])
+            (ols_model.params['season_impact'] * recent_df['season_impact'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -468,7 +417,7 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (Baseline: 2026, January, Tue-Thu, Clear, {mean_temp:.1f}°F, Regular school day)',
+        'const': f'Intercept (Baseline: 2026, Neutral season, Tue-Thu, Clear, {mean_temp:.1f}°F)',
         'Temp_Centered': 'Temperature (centered)',
         'is_weekend': 'Weekend (Sat/Sun only)',
         'is_rain': 'Rain/Mixed (vs Clear)',
@@ -481,18 +430,7 @@ try:
         'is_2024': 'Year 2024 (vs 2026 baseline)',
         'is_2025': 'Year 2025 (vs 2026 baseline)',
         'is_2026_friday': '2026 × Friday (Navy base effect strengthening)',
-        'is_school_holiday': 'School Holiday / Break (families have time off)',
-        'is_feb': 'February (vs January baseline)',
-        'is_mar': 'March (vs January baseline)',
-        'is_apr': 'April (vs January baseline)',
-        'is_may': 'May (vs January baseline)',
-        'is_jun': 'June (vs January baseline)',
-        'is_jul': 'July (vs January baseline)',
-        'is_aug': 'August (vs January baseline)',
-        'is_sep': 'September (vs January baseline)',
-        'is_oct': 'October (vs January baseline)',
-        'is_nov': 'November (vs January baseline)',
-        'is_dec': 'December (vs January baseline)'
+        'season_impact': 'Season Impact (+1: Jan/Feb/Nov/Dec, -1: Apr/Jun, 0: others)'
     }
     
     for var in params.index:

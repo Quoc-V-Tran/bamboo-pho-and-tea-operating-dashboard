@@ -101,20 +101,22 @@ try:
     merged['is_rain'] = (merged['Precip_Type'].isin(['Rain', 'Mixed'])).astype(int)
     merged['is_snow'] = (merged['Precip_Type'].isin(['Snow', 'Flurries', 'Heavy Snow'])).astype(int)
     
-    # Month dummy variables (January is baseline/reference)
+    # Seasonality: Consolidated season impact variable
     merged['Date_dt'] = pd.to_datetime(merged['Date'])
     merged['month'] = merged['Date_dt'].dt.month
-    merged['is_feb'] = (merged['month'] == 2).astype(int)
-    merged['is_mar'] = (merged['month'] == 3).astype(int)
-    merged['is_apr'] = (merged['month'] == 4).astype(int)
-    merged['is_may'] = (merged['month'] == 5).astype(int)
-    merged['is_jun'] = (merged['month'] == 6).astype(int)
-    merged['is_jul'] = (merged['month'] == 7).astype(int)
-    merged['is_aug'] = (merged['month'] == 8).astype(int)
-    merged['is_sep'] = (merged['month'] == 9).astype(int)
-    merged['is_oct'] = (merged['month'] == 10).astype(int)
-    merged['is_nov'] = (merged['month'] == 11).astype(int)
-    merged['is_dec'] = (merged['month'] == 12).astype(int)
+    
+    # High Demand months: Jan, Feb, Nov, Dec (+1)
+    # Low Demand months: April, June (-1)
+    # Neutral: All other months (0)
+    def get_season_impact(month):
+        if month in [1, 2, 11, 12]:  # High demand (winter/holiday)
+            return 1
+        elif month in [4, 6]:  # Low demand (spring/early summer)
+            return -1
+        else:  # Neutral (Mar, May, Jul, Aug, Sep, Oct)
+            return 0
+    
+    merged['season_impact'] = merged['month'].apply(get_season_impact)
     
     # Naval Base (NSA Mechanicsburg) Traffic Effects
     
@@ -174,48 +176,6 @@ try:
     # Interaction: 2026 × Friday (Test if Navy base effect strengthened in 2026)
     merged['is_2026_friday'] = (merged['is_2026'] * merged['is_weekly_friday']).astype(int)
     
-    # --- SCHOOL HOLIDAY EFFECT ---
-    # Define school holiday ranges (when families have time off)
-    school_holidays = [
-        # Winter Break
-        ('2023-12-22', '2024-01-01'),
-        ('2024-12-23', '2025-01-01'),
-        ('2025-12-24', '2026-01-02'),
-        # Spring Break
-        ('2024-03-28', '2024-04-01'),
-        ('2025-04-14', '2025-04-21'),
-        ('2026-03-20', '2026-03-24'),
-        # Thanksgiving Break
-        ('2023-11-23', '2023-11-27'),
-        ('2024-11-28', '2024-12-02'),
-        ('2025-11-27', '2025-11-28'),
-    ]
-    
-    # Single day holidays
-    single_day_holidays = [
-        # MLK Day
-        '2024-01-15', '2025-01-20', '2026-01-19',
-        # Presidents' Day
-        '2024-02-19', '2025-02-17', '2026-02-16',
-        # Memorial Day
-        '2024-05-27', '2025-05-26', '2026-05-25',
-        # Labor Day
-        '2024-09-02', '2025-09-01', '2026-09-07',
-    ]
-    
-    # Initialize column
-    merged['is_school_holiday'] = 0
-    
-    # Mark date ranges
-    for start, end in school_holidays:
-        date_range = pd.date_range(start=start, end=end, freq='D')
-        merged.loc[merged['Date_dt'].isin(date_range), 'is_school_holiday'] = 1
-    
-    # Mark single days
-    for date_str in single_day_holidays:
-        date_obj = pd.to_datetime(date_str).date()
-        merged.loc[merged['Date'] == date_obj, 'is_school_holiday'] = 1
-    
     # Filter for active days only (Exclude Mondays and zero sales)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -256,15 +216,15 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD PAYDAY + SCHOOL HOLIDAY + MONTH + YEAR MODEL ---
+    # --- BUILD SIMPLIFIED ROBUST MODEL ---
     # Bowls_Sold ~ Temp + Weekend + Rain + Snow + Federal_Payday + Payday_Weekend + 
     #              Weekly_Friday + Semi_Monthly + Semi_Monthly×Weekend + Year_2024 + Year_2025 + 
-    #              2026×Friday + School_Holiday + Month_Dummies(Feb-Dec, Jan is baseline)
-    # Note: is_clear is baseline for precipitation, 2026 is baseline for year, January is baseline for month
+    #              2026×Friday + Season_Impact
+    # Note: is_clear is baseline for precipitation, 2026 is baseline for year
+    # Season_Impact: High Demand (+1) = Jan/Feb/Nov/Dec, Low Demand (-1) = Apr/Jun, Neutral (0) = others
     X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                  'is_2024', 'is_2025', 'is_2026_friday', 'is_school_holiday',
-                  'is_feb', 'is_mar', 'is_apr', 'is_may', 'is_jun', 'is_jul', 'is_aug', 'is_sep', 'is_oct', 'is_nov', 'is_dec']]
+                  'is_2024', 'is_2025', 'is_2026_friday', 'season_impact']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -304,17 +264,18 @@ try:
             tomorrow_is_fed_payday = st.checkbox("Federal Payday Friday", value=False, help="Bi-weekly NSA")
             tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after)", value=False)
         
-        st.markdown("**🎓 School Holiday**")
-        tomorrow_is_school_holiday = st.checkbox("School Holiday / Break", value=False,
-                                                  help="Winter/Spring/Thanksgiving breaks, MLK, Presidents' Day, Memorial Day, Labor Day")
-        
-        st.markdown("**📅 Month**")
-        tomorrow_month = st.selectbox("Select Month", 
-                                      options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-                                      format_func=lambda x: ['January', 'February', 'March', 'April', 'May', 'June', 
-                                                             'July', 'August', 'September', 'October', 'November', 'December'][x-1],
-                                      index=1,  # Default to February (index 1)
-                                      help="Month affects demand patterns independently of temperature")
+        st.markdown("**🌦️ Seasonality**")
+        tomorrow_season_impact = st.selectbox(
+            "Season Impact", 
+            options=[1, 0, -1],
+            format_func=lambda x: {
+                1: "High Demand (Jan, Feb, Nov, Dec)",
+                0: "Neutral (Mar, May, Jul, Aug, Sep, Oct)",
+                -1: "Low Demand (Apr, Jun)"
+            }[x],
+            index=0,  # Default to High Demand (it's February)
+            help="Consolidated seasonal demand pattern"
+        )
         
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
@@ -323,21 +284,6 @@ try:
         tomorrow_semi_wknd = (1 if tomorrow_is_semi_monthly else 0) * (1 if tomorrow_is_weekend else 0)
         # Tomorrow is assumed to be 2026 (is_2024=0, is_2025=0)
         tomorrow_2026_friday = 1 if tomorrow_is_weekly_friday else 0
-        
-        # Month dummies (January = baseline, so all zeros)
-        tomorrow_month_dummies = {
-            'is_feb': 1 if tomorrow_month == 2 else 0,
-            'is_mar': 1 if tomorrow_month == 3 else 0,
-            'is_apr': 1 if tomorrow_month == 4 else 0,
-            'is_may': 1 if tomorrow_month == 5 else 0,
-            'is_jun': 1 if tomorrow_month == 6 else 0,
-            'is_jul': 1 if tomorrow_month == 7 else 0,
-            'is_aug': 1 if tomorrow_month == 8 else 0,
-            'is_sep': 1 if tomorrow_month == 9 else 0,
-            'is_oct': 1 if tomorrow_month == 10 else 0,
-            'is_nov': 1 if tomorrow_month == 11 else 0,
-            'is_dec': 1 if tomorrow_month == 12 else 0,
-        }
         
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
@@ -352,22 +298,11 @@ try:
                         (ols_model.params['is_2024'] * 0) +  # Tomorrow is 2026, not 2024
                         (ols_model.params['is_2025'] * 0) +  # Tomorrow is 2026, not 2025
                         (ols_model.params['is_2026_friday'] * tomorrow_2026_friday) +
-                        (ols_model.params['is_school_holiday'] * (1 if tomorrow_is_school_holiday else 0)) +
-                        (ols_model.params['is_feb'] * tomorrow_month_dummies['is_feb']) +
-                        (ols_model.params['is_mar'] * tomorrow_month_dummies['is_mar']) +
-                        (ols_model.params['is_apr'] * tomorrow_month_dummies['is_apr']) +
-                        (ols_model.params['is_may'] * tomorrow_month_dummies['is_may']) +
-                        (ols_model.params['is_jun'] * tomorrow_month_dummies['is_jun']) +
-                        (ols_model.params['is_jul'] * tomorrow_month_dummies['is_jul']) +
-                        (ols_model.params['is_aug'] * tomorrow_month_dummies['is_aug']) +
-                        (ols_model.params['is_sep'] * tomorrow_month_dummies['is_sep']) +
-                        (ols_model.params['is_oct'] * tomorrow_month_dummies['is_oct']) +
-                        (ols_model.params['is_nov'] * tomorrow_month_dummies['is_nov']) +
-                        (ols_model.params['is_dec'] * tomorrow_month_dummies['is_dec']))
+                        (ols_model.params['season_impact'] * tomorrow_season_impact))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Model with month effects + school holidays (24 features, Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Simplified robust model (13 features, Mean temp: {mean_temp:.1f}°F)")
         
         # --- CAPACITY CONSTRAINT ANALYSIS ---
         MAX_DINE_IN_CAPACITY = 80  # Based on 10 tables, ~3 turns/day, 2.5 bowls/table avg
