@@ -74,10 +74,10 @@ try:
     
     # --- FEATURE ENGINEERING ---
     
-    # Weekend binary (Friday, Saturday, Sunday)
-    merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
+    # Weekend binary (Saturday and Sunday ONLY - Friday is separate for base traffic)
+    merged['is_weekend'] = merged['Day_of_Week'].isin(['Saturday', 'Sunday']).astype(int)
     
-    # Mixed precipitation dummy (only significant precipitation type)
+    # Mixed precipitation dummy
     merged['is_mixed_precip'] = (merged['Precip_Type'] == 'Mixed').astype(int)
     
     # Naval Base (NSA Mechanicsburg) Traffic Effects
@@ -115,10 +115,62 @@ try:
         # Mark the Sunday (2 days after payday Friday)
         merged.loc[merged['Date_dt'] == payday_date + pd.Timedelta(days=2), 'is_payday_weekend'] = 1
     
-    # 3. Friday Base Traffic (proxy for Friday lunch rush from NSA Mechanicsburg)
+    # 3. Friday Base Traffic (NSA Mechanicsburg lunch rush)
     merged['is_friday_base'] = (merged['Day_of_Week'] == 'Friday').astype(int)
     
-    # Filter for active days only (Exclude Mondays/zeros)
+    # --- HOLIDAY PROXIMITY EFFECTS ---
+    # Define all major holidays for 2025-2026
+    major_holidays = [
+        # 2025 Holidays
+        pd.Timestamp('2025-01-01'),  # New Year's
+        pd.Timestamp('2025-01-29'),  # Lunar New Year
+        pd.Timestamp('2025-02-09'),  # Super Bowl Sunday
+        pd.Timestamp('2025-02-14'),  # Valentine's Day
+        pd.Timestamp('2025-04-20'),  # Easter
+        pd.Timestamp('2025-05-26'),  # Memorial Day
+        pd.Timestamp('2025-07-04'),  # July 4th
+        pd.Timestamp('2025-09-01'),  # Labor Day
+        pd.Timestamp('2025-11-27'),  # Thanksgiving
+        pd.Timestamp('2025-12-25'),  # Christmas
+        # 2026 Holidays
+        pd.Timestamp('2026-01-01'),  # New Year's
+        pd.Timestamp('2026-02-17'),  # Lunar New Year
+        pd.Timestamp('2026-02-08'),  # Super Bowl Sunday
+        pd.Timestamp('2026-02-14'),  # Valentine's Day
+        pd.Timestamp('2026-04-05'),  # Easter
+        pd.Timestamp('2026-05-25'),  # Memorial Day
+        pd.Timestamp('2026-07-04'),  # July 4th
+        pd.Timestamp('2026-09-07'),  # Labor Day
+        pd.Timestamp('2026-11-26'),  # Thanksgiving
+        pd.Timestamp('2026-12-25'),  # Christmas
+    ]
+    
+    # Pre-Holiday: 1-2 days before major holidays
+    merged['is_pre_holiday'] = 0
+    for holiday in major_holidays:
+        merged.loc[merged['Date_dt'].isin([holiday - pd.Timedelta(days=1), holiday - pd.Timedelta(days=2)]), 'is_pre_holiday'] = 1
+    
+    # Post-Holiday: 1-2 days after major holidays
+    merged['is_post_holiday'] = 0
+    for holiday in major_holidays:
+        merged.loc[merged['Date_dt'].isin([holiday + pd.Timedelta(days=1), holiday + pd.Timedelta(days=2)]), 'is_post_holiday'] = 1
+    
+    # Valentine's Period: Feb 13-15 (massive pho window)
+    merged['is_valentines_period'] = merged['Date_dt'].isin([
+        pd.Timestamp('2025-02-13'), pd.Timestamp('2025-02-14'), pd.Timestamp('2025-02-15'),
+        pd.Timestamp('2026-02-13'), pd.Timestamp('2026-02-14'), pd.Timestamp('2026-02-15')
+    ]).astype(int)
+    
+    # Lunar New Year 3-day window: 2025 (Jan 29-31), 2026 (Feb 17-19)
+    merged['is_lunar_new_year'] = merged['Date_dt'].isin([
+        pd.Timestamp('2025-01-29'), pd.Timestamp('2025-01-30'), pd.Timestamp('2025-01-31'),
+        pd.Timestamp('2026-02-17'), pd.Timestamp('2026-02-18'), pd.Timestamp('2026-02-19')
+    ]).astype(int)
+    
+    # Interaction: Pre-Holiday × Friday ('I'm not cooking before the long weekend')
+    merged['is_pre_holiday_friday'] = (merged['is_pre_holiday'] * merged['is_friday_base']).astype(int)
+    
+    # Filter for active days only (Exclude Mondays AND any days with zero sales)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
         (merged['Bowls_Sold'] > 0)
@@ -137,9 +189,12 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD MODEL WITH BASE TRAFFIC EFFECTS ---
-    # Bowls_Sold ~ Intercept + Temp + Weekend + Mixed + Federal_Payday + Payday_Weekend + Friday_Base
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 'is_payday_weekend', 'is_friday_base']]
+    # --- BUILD COMPREHENSIVE MODEL WITH BASE + HOLIDAY EFFECTS ---
+    # Bowls_Sold ~ Temp + Weekend(Sat/Sun) + Mixed + Federal_Payday + Payday_Weekend + 
+    #              Friday_Base + Pre_Holiday + Post_Holiday + Valentines + Lunar_NY + Pre_Holiday×Friday
+    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 
+                  'is_payday_weekend', 'is_friday_base', 'is_pre_holiday', 'is_post_holiday',
+                  'is_valentines_period', 'is_lunar_new_year', 'is_pre_holiday_friday']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -157,19 +212,31 @@ try:
     with pred_col1:
         st.subheader("Enter Tomorrow's Forecast")
         tomorrow_temp = st.number_input("Temperature (°F)", min_value=0, max_value=100, value=35, step=1)
-        tomorrow_is_weekend = st.checkbox("Weekend Day (Fri-Sun)", value=False)
-        tomorrow_is_mixed = st.checkbox("Mixed Precipitation", value=False)
         
-        st.markdown("**🏛️ Naval Base Traffic (NSA Mechanicsburg)**")
-        tomorrow_is_fed_payday = st.checkbox("Federal Payday (bi-weekly Friday)", value=False,
-                                             help="Every other Friday starting Jan 9, 2026")
-        tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after payday)", value=False,
-                                              help="Saturday or Sunday after federal payday")
-        tomorrow_is_friday_base = st.checkbox("Friday (Base lunch traffic)", value=False,
-                                              help="Friday lunch rush from NSA Mechanicsburg")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            tomorrow_is_weekend = st.checkbox("Weekend (Sat/Sun)", value=False)
+            tomorrow_is_mixed = st.checkbox("Mixed Precip", value=False)
+        with col_b:
+            tomorrow_is_friday_base = st.checkbox("Friday", value=False, help="Base traffic")
+            tomorrow_is_fed_payday = st.checkbox("Fed Payday Fri", value=False, help="Bi-weekly")
+        
+        st.markdown("**🎉 Holiday Effects**")
+        col_c, col_d = st.columns(2)
+        with col_c:
+            tomorrow_is_pre_holiday = st.checkbox("Pre-Holiday (1-2 days before)", value=False)
+            tomorrow_is_post_holiday = st.checkbox("Post-Holiday (1-2 days after)", value=False)
+        with col_d:
+            tomorrow_is_valentines = st.checkbox("Valentine's Period (Feb 13-15)", value=False)
+            tomorrow_is_lunar_ny = st.checkbox("Lunar New Year (3-day window)", value=False)
+        
+        tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after fed payday)", value=False)
         
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
+        
+        # Pre-holiday × Friday interaction
+        tomorrow_pre_hol_fri = (1 if tomorrow_is_pre_holiday else 0) * (1 if tomorrow_is_friday_base else 0)
         
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
@@ -177,37 +244,42 @@ try:
                         (ols_model.params['is_mixed_precip'] * (1 if tomorrow_is_mixed else 0)) +
                         (ols_model.params['is_federal_payday'] * (1 if tomorrow_is_fed_payday else 0)) +
                         (ols_model.params['is_payday_weekend'] * (1 if tomorrow_is_payday_wknd else 0)) +
-                        (ols_model.params['is_friday_base'] * (1 if tomorrow_is_friday_base else 0)))
+                        (ols_model.params['is_friday_base'] * (1 if tomorrow_is_friday_base else 0)) +
+                        (ols_model.params['is_pre_holiday'] * (1 if tomorrow_is_pre_holiday else 0)) +
+                        (ols_model.params['is_post_holiday'] * (1 if tomorrow_is_post_holiday else 0)) +
+                        (ols_model.params['is_valentines_period'] * (1 if tomorrow_is_valentines else 0)) +
+                        (ols_model.params['is_lunar_new_year'] * (1 if tomorrow_is_lunar_ny else 0)) +
+                        (ols_model.params['is_pre_holiday_friday'] * tomorrow_pre_hol_fri))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Model with base traffic effects (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Comprehensive model with 11 features (Mean temp: {mean_temp:.1f}°F)")
     
     with pred_col2:
-        st.subheader("📊 Historical Stats & Model Coefficients")
+        st.subheader("📊 Model Performance")
         
-        stat_col1, stat_col2 = st.columns(2)
+        stat_col1, stat_col2, stat_col3 = st.columns(3)
         
         with stat_col1:
             avg_bowls = model_df['Bowls_Sold'].mean()
             st.metric("Avg Daily Bowls", f"{avg_bowls:.1f}")
             st.metric("Model R²", f"{ols_model.rsquared:.3f}",
                      help="Proportion of variance explained")
-            st.metric("🌡️ Temp Effect", f"{ols_model.params['Temp_Centered']:.2f}/°F",
-                     help="Colder = More sales")
+            st.metric("Adj. R²", f"{ols_model.rsquared_adj:.3f}")
             avg_error_pct = model_df['Error_Pct'].mean()
-            st.metric("Avg Error %", f"{avg_error_pct:.1f}%",
-                     help="Average absolute % error")
+            st.metric("Avg Error %", f"{avg_error_pct:.1f}%")
         
         with stat_col2:
-            st.metric("📅 Weekend", f"+{ols_model.params['is_weekend']:.1f}",
-                     help="Fri/Sat/Sun boost")
-            st.metric("🌧️ Mixed Precip", f"+{ols_model.params['is_mixed_precip']:.1f}",
-                     help="Mixed weather boost")
-            st.metric("🏛️ Fed Payday Fri", f"{ols_model.params['is_federal_payday']:+.1f}",
-                     help="Bi-weekly federal payday")
-            st.metric("💰 Payday Weekend", f"{ols_model.params['is_payday_weekend']:+.1f}",
-                     help="Sat/Sun after payday")
+            st.markdown("**Core Effects**")
+            st.metric("🌡️ Temp", f"{ols_model.params['Temp_Centered']:.2f}/°F")
+            st.metric("📅 Weekend", f"+{ols_model.params['is_weekend']:.1f}")
+            st.metric("🏛️ Friday Base", f"+{ols_model.params['is_friday_base']:.1f}")
+        
+        with stat_col3:
+            st.markdown("**Special Events**")
+            st.metric("🎉 Pre-Holiday", f"{ols_model.params['is_pre_holiday']:+.1f}")
+            st.metric("💝 Valentine's", f"{ols_model.params['is_valentines_period']:+.1f}")
+            st.metric("🧧 Lunar NY", f"{ols_model.params['is_lunar_new_year']:+.1f}")
 
     st.divider()
     

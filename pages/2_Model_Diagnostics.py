@@ -80,8 +80,8 @@ try:
     
     # --- FEATURE ENGINEERING ---
     
-    # Weekend binary
-    merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
+    # Weekend binary (Saturday and Sunday only)
+    merged['is_weekend'] = merged['Day_of_Week'].isin(['Saturday', 'Sunday']).astype(int)
     
     # Mixed precipitation
     merged['is_mixed_precip'] = (merged['Precip_Type'] == 'Mixed').astype(int)
@@ -117,6 +117,37 @@ try:
     # Friday Base Traffic
     merged['is_friday_base'] = (merged['Day_of_Week'] == 'Friday').astype(int)
     
+    # Holiday Proximity Effects
+    major_holidays = [
+        pd.Timestamp('2025-01-01'), pd.Timestamp('2025-01-29'), pd.Timestamp('2025-02-09'),
+        pd.Timestamp('2025-02-14'), pd.Timestamp('2025-04-20'), pd.Timestamp('2025-05-26'),
+        pd.Timestamp('2025-07-04'), pd.Timestamp('2025-09-01'), pd.Timestamp('2025-11-27'),
+        pd.Timestamp('2025-12-25'), pd.Timestamp('2026-01-01'), pd.Timestamp('2026-02-17'),
+        pd.Timestamp('2026-02-08'), pd.Timestamp('2026-02-14'), pd.Timestamp('2026-04-05'),
+        pd.Timestamp('2026-05-25'), pd.Timestamp('2026-07-04'), pd.Timestamp('2026-09-07'),
+        pd.Timestamp('2026-11-26'), pd.Timestamp('2026-12-25')
+    ]
+    
+    merged['is_pre_holiday'] = 0
+    for holiday in major_holidays:
+        merged.loc[merged['Date_dt'].isin([holiday - pd.Timedelta(days=1), holiday - pd.Timedelta(days=2)]), 'is_pre_holiday'] = 1
+    
+    merged['is_post_holiday'] = 0
+    for holiday in major_holidays:
+        merged.loc[merged['Date_dt'].isin([holiday + pd.Timedelta(days=1), holiday + pd.Timedelta(days=2)]), 'is_post_holiday'] = 1
+    
+    merged['is_valentines_period'] = merged['Date_dt'].isin([
+        pd.Timestamp('2025-02-13'), pd.Timestamp('2025-02-14'), pd.Timestamp('2025-02-15'),
+        pd.Timestamp('2026-02-13'), pd.Timestamp('2026-02-14'), pd.Timestamp('2026-02-15')
+    ]).astype(int)
+    
+    merged['is_lunar_new_year'] = merged['Date_dt'].isin([
+        pd.Timestamp('2025-01-29'), pd.Timestamp('2025-01-30'), pd.Timestamp('2025-01-31'),
+        pd.Timestamp('2026-02-17'), pd.Timestamp('2026-02-18'), pd.Timestamp('2026-02-19')
+    ]).astype(int)
+    
+    merged['is_pre_holiday_friday'] = (merged['is_pre_holiday'] * merged['is_friday_base']).astype(int)
+    
     # Prepare model data
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -127,8 +158,10 @@ try:
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run OLS regression with base traffic effects
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 'is_payday_weekend', 'is_friday_base']]
+    # Run comprehensive OLS regression
+    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 
+                  'is_payday_weekend', 'is_friday_base', 'is_pre_holiday', 'is_post_holiday',
+                  'is_valentines_period', 'is_lunar_new_year', 'is_pre_holiday_friday']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -149,7 +182,12 @@ try:
             (ols_model.params['is_mixed_precip'] * recent_df['is_mixed_precip']) +
             (ols_model.params['is_federal_payday'] * recent_df['is_federal_payday']) +
             (ols_model.params['is_payday_weekend'] * recent_df['is_payday_weekend']) +
-            (ols_model.params['is_friday_base'] * recent_df['is_friday_base'])
+            (ols_model.params['is_friday_base'] * recent_df['is_friday_base']) +
+            (ols_model.params['is_pre_holiday'] * recent_df['is_pre_holiday']) +
+            (ols_model.params['is_post_holiday'] * recent_df['is_post_holiday']) +
+            (ols_model.params['is_valentines_period'] * recent_df['is_valentines_period']) +
+            (ols_model.params['is_lunar_new_year'] * recent_df['is_lunar_new_year']) +
+            (ols_model.params['is_pre_holiday_friday'] * recent_df['is_pre_holiday_friday'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -210,13 +248,18 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (Baseline: Tue-Thu, {mean_temp:.1f}°F)',
+        'const': f'Intercept (Baseline: Tue-Thu, Clear, {mean_temp:.1f}°F)',
         'Temp_Centered': 'Temperature (centered)',
-        'is_weekend': 'Weekend (Fri/Sat/Sun)',
+        'is_weekend': 'Weekend (Sat/Sun only)',
         'is_mixed_precip': 'Mixed Precipitation',
         'is_federal_payday': 'Federal Payday Friday (bi-weekly)',
         'is_payday_weekend': 'Payday Weekend (Sat/Sun after payday)',
-        'is_friday_base': 'Friday (Base Traffic)'
+        'is_friday_base': 'Friday (NSA Base Traffic)',
+        'is_pre_holiday': 'Pre-Holiday (1-2 days before)',
+        'is_post_holiday': 'Post-Holiday (1-2 days after)',
+        'is_valentines_period': "Valentine's Period (Feb 13-15)",
+        'is_lunar_new_year': 'Lunar New Year (3-day window)',
+        'is_pre_holiday_friday': 'Pre-Holiday × Friday (interaction)'
     }
     
     for var in params.index:
@@ -263,25 +306,25 @@ try:
     st.subheader("🌡️ Temperature vs Bowls Sold")
     
     # Create scatter plot colored by weekend vs midweek
-    model_df['Day_Type'] = model_df['is_weekend'].apply(lambda x: 'Weekend' if x == 1 else 'Midweek')
+    model_df['Day_Type'] = model_df['is_weekend'].apply(lambda x: 'Weekend (Sat/Sun)' if x == 1 else 'Midweek (Tue-Thu)')
     
     fig = px.scatter(model_df, x='Temp_High', y='Bowls_Sold', color='Day_Type',
-                     color_discrete_map={'Weekend': '#DAA520', 'Midweek': '#1E88E5'},
+                     color_discrete_map={'Weekend (Sat/Sun)': '#DAA520', 'Midweek (Tue-Thu)': '#1E88E5'},
                      hover_data=['Date', 'Day_of_Week', 'Precip_Type'],
                      labels={'Temp_High': 'Temperature (°F)', 'Bowls_Sold': 'Bowls Sold'})
     
-    # Regression Lines
+    # Regression Lines (showing baseline relationships without special events)
     temp_range = np.linspace(model_df['Temp_High'].min(), model_df['Temp_High'].max(), 100)
     temp_range_centered = temp_range - mean_temp
     
-    # Weekend line (no mixed precip)
+    # Weekend line (Sat/Sun, no special events)
     y_weekend = ols_model.params['const'] + (ols_model.params['Temp_Centered'] * temp_range_centered) + ols_model.params['is_weekend']
-    # Midweek line (no mixed precip)
+    # Midweek line (Tue-Thu, no special events)
     y_midweek = ols_model.params['const'] + (ols_model.params['Temp_Centered'] * temp_range_centered)
     
-    fig.add_trace(go.Scatter(x=temp_range, y=y_weekend, name='Weekend Trend',
+    fig.add_trace(go.Scatter(x=temp_range, y=y_weekend, name='Weekend Baseline',
                             line=dict(color='#DAA520', width=4), mode='lines'))
-    fig.add_trace(go.Scatter(x=temp_range, y=y_midweek, name='Midweek Trend',
+    fig.add_trace(go.Scatter(x=temp_range, y=y_midweek, name='Midweek Baseline',
                             line=dict(color='#1E88E5', width=4, dash='dash'), mode='lines'))
     
     fig.update_traces(marker=dict(size=10, opacity=0.6))
@@ -289,7 +332,7 @@ try:
                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     st.plotly_chart(fig, use_container_width=True)
     
-    st.caption("📊 Simple, parsimonious model with only 3 predictors (all highly significant)")
+    st.caption("📊 Baseline relationships shown. Full model includes 11 features: Temp, Weekend(Sat/Sun), Mixed Precip, Fed Payday, Payday Weekend, Friday Base, Pre/Post-Holiday, Valentine's, Lunar NY, and Pre-Holiday×Friday interaction.")
 
 except Exception as e:
     st.error(f"Model Diagnostics Error: {e}")
