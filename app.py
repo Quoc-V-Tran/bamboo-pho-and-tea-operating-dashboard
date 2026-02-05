@@ -40,8 +40,8 @@ def load_all_data():
     df_jan_2026['Gross Sales'] = df_jan_2026['Gross Sales'].replace(r'[\$,]', '', regex=True).astype(float)
     df_jan_2026['Qty'] = pd.to_numeric(df_jan_2026['Qty'], errors='coerce').fillna(0)
     
-    # Load Feb 2026 sales data (up to Feb 2)
-    df_feb_2026 = pd.read_csv('feb_2026_uptofeb2_summary.csv')
+    # Load Feb 2026 sales data (Feb 1-4)
+    df_feb_2026 = pd.read_csv('Feb 3 and 4 sales.csv')
     df_feb_2026['Datetime_PT'] = pd.to_datetime(df_feb_2026['Date'] + ' ' + df_feb_2026['Time'])
     df_feb_2026['Datetime_ET'] = df_feb_2026['Datetime_PT'].dt.tz_localize(pt_tz).dt.tz_convert(et_tz)
     df_feb_2026['Date'] = df_feb_2026['Datetime_ET'].dt.date
