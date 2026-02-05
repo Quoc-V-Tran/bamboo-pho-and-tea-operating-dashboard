@@ -167,6 +167,10 @@ try:
     # Post-Rent Dip: Days 2-5 (beginning of month, after paying rent)
     merged['is_post_rent_dip'] = merged['Date_dt'].dt.day.isin([2, 3, 4, 5]).astype(int)
     
+    # Interactions: Test if rent cycle effect is stronger in 2026 (budget sensitivity hypothesis)
+    merged['is_2026_post_rent_dip'] = (merged['is_2026'] * merged['is_post_rent_dip']).astype(int)
+    merged['is_2026_pre_rent_surge'] = (merged['is_2026'] * merged['is_pre_rent_surge']).astype(int)
+    
     # Filter for active days only (Exclude Mondays and zero sales)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -210,11 +214,12 @@ try:
     # --- BUILD MODEL WITH PAYDAY + LIQUIDITY CYCLE + YEAR CONTROLS ---
     # Bowls_Sold ~ Temp + Weekend + Rain + Snow + Federal_Payday + Payday_Weekend + 
     #              Weekly_Friday + Semi_Monthly + Semi_Monthly×Weekend + Year_2024 + Year_2025 + 
-    #              2026×Friday + Pre_Rent_Surge + Post_Rent_Dip
+    #              2026×Friday + Pre_Rent_Surge + Post_Rent_Dip + 2026×Post_Rent + 2026×Pre_Rent
     # Note: is_clear is baseline for precipitation, 2026 is baseline for year
     X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                  'is_2024', 'is_2025', 'is_2026_friday', 'is_pre_rent_surge', 'is_post_rent_dip']]
+                  'is_2024', 'is_2025', 'is_2026_friday', 'is_pre_rent_surge', 'is_post_rent_dip',
+                  'is_2026_post_rent_dip', 'is_2026_pre_rent_surge']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -268,8 +273,10 @@ try:
         
         # Interactions
         tomorrow_semi_wknd = (1 if tomorrow_is_semi_monthly else 0) * (1 if tomorrow_is_weekend else 0)
-        # Tomorrow is assumed to be 2026 (is_2024=0, is_2025=0)
+        # Tomorrow is assumed to be 2026 (is_2024=0, is_2025=0, is_2026=1)
         tomorrow_2026_friday = 1 if tomorrow_is_weekly_friday else 0
+        tomorrow_2026_post_rent = 1 if tomorrow_is_post_rent else 0  # is_2026=1 * is_post_rent
+        tomorrow_2026_pre_rent = 1 if tomorrow_is_pre_rent else 0    # is_2026=1 * is_pre_rent
         
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
@@ -285,11 +292,13 @@ try:
                         (ols_model.params['is_2025'] * 0) +  # Tomorrow is 2026, not 2025
                         (ols_model.params['is_2026_friday'] * tomorrow_2026_friday) +
                         (ols_model.params['is_pre_rent_surge'] * (1 if tomorrow_is_pre_rent else 0)) +
-                        (ols_model.params['is_post_rent_dip'] * (1 if tomorrow_is_post_rent else 0)))
+                        (ols_model.params['is_post_rent_dip'] * (1 if tomorrow_is_post_rent else 0)) +
+                        (ols_model.params['is_2026_post_rent_dip'] * tomorrow_2026_post_rent) +
+                        (ols_model.params['is_2026_pre_rent_surge'] * tomorrow_2026_pre_rent))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Model with liquidity cycle + year controls (14 features, Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Model with 2026 budget sensitivity test (16 features, Mean temp: {mean_temp:.1f}°F)")
         
         # --- CAPACITY CONSTRAINT ANALYSIS ---
         MAX_DINE_IN_CAPACITY = 80  # Based on 10 tables, ~3 turns/day, 2.5 bowls/table avg

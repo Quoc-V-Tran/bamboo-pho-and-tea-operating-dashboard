@@ -189,6 +189,10 @@ try:
     merged['is_pre_rent_surge'] = merged['Date_dt'].dt.day.isin([28, 29, 30, 31]).astype(int)
     merged['is_post_rent_dip'] = merged['Date_dt'].dt.day.isin([2, 3, 4, 5]).astype(int)
     
+    # Interactions: Test if rent cycle effect is stronger in 2026 (budget sensitivity hypothesis)
+    merged['is_2026_post_rent_dip'] = (merged['is_2026'] * merged['is_post_rent_dip']).astype(int)
+    merged['is_2026_pre_rent_surge'] = (merged['is_2026'] * merged['is_pre_rent_surge']).astype(int)
+    
     # Prepare model data (exclude Mondays and zero sales)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -199,11 +203,12 @@ try:
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run model with payday, liquidity cycle, and year controls
+    # Run model with payday, liquidity cycle, year controls, and 2026 budget sensitivity test
     # Note: is_clear is baseline for precipitation, 2026 is baseline for year
     X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                  'is_2024', 'is_2025', 'is_2026_friday', 'is_pre_rent_surge', 'is_post_rent_dip']]
+                  'is_2024', 'is_2025', 'is_2026_friday', 'is_pre_rent_surge', 'is_post_rent_dip',
+                  'is_2026_post_rent_dip', 'is_2026_pre_rent_surge']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -344,7 +349,9 @@ try:
             (ols_model.params['is_2025'] * recent_df['is_2025']) +
             (ols_model.params['is_2026_friday'] * recent_df['is_2026_friday']) +
             (ols_model.params['is_pre_rent_surge'] * recent_df['is_pre_rent_surge']) +
-            (ols_model.params['is_post_rent_dip'] * recent_df['is_post_rent_dip'])
+            (ols_model.params['is_post_rent_dip'] * recent_df['is_post_rent_dip']) +
+            (ols_model.params['is_2026_post_rent_dip'] * recent_df['is_2026_post_rent_dip']) +
+            (ols_model.params['is_2026_pre_rent_surge'] * recent_df['is_2026_pre_rent_surge'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -418,8 +425,10 @@ try:
         'is_2024': 'Year 2024 (vs 2026 baseline)',
         'is_2025': 'Year 2025 (vs 2026 baseline)',
         'is_2026_friday': '2026 × Friday (Navy base effect strengthening)',
-        'is_pre_rent_surge': 'Pre-Rent Surge (Days 28-31, end-of-month spending)',
-        'is_post_rent_dip': 'Post-Rent Dip (Days 2-5, post-rent constraint)'
+        'is_pre_rent_surge': 'Pre-Rent Surge (Days 28-31, baseline effect 2024-2026)',
+        'is_post_rent_dip': 'Post-Rent Dip (Days 2-5, baseline effect 2024-2026)',
+        'is_2026_post_rent_dip': '2026 × Post-Rent Dip (2026-specific budget sensitivity)',
+        'is_2026_pre_rent_surge': '2026 × Pre-Rent Surge (2026-specific spending behavior)'
     }
     
     for var in params.index:
