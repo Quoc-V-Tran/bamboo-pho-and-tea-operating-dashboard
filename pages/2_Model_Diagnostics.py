@@ -270,7 +270,10 @@ try:
     
     with stat_col2:
         st.markdown("**Core Effects**")
-        st.metric("🌡️ Temp", f"{ols_model.params['Temp_Centered']:.2f}/°F")
+        st.metric("🌡️ Cold", f"{ols_model.params['temp_cold']:.3f}/°F",
+                 help=f"Below {best_kink}°F")
+        st.metric("🌡️ Hot", f"{ols_model.params['temp_hot']:.3f}/°F",
+                 help=f"Above {best_kink}°F")
         st.metric("📅 Weekend", f"+{ols_model.params['is_weekend']:.1f}")
         st.metric("🌧️ Rain", f"{ols_model.params['is_rain']:+.1f}")
         st.metric("❄️ Snow", f"{ols_model.params['is_snow']:+.1f}")
@@ -516,12 +519,18 @@ try:
     
     # Regression Lines (showing baseline relationships without special events)
     temp_range = np.linspace(model_df['Temp_High'].min(), model_df['Temp_High'].max(), 100)
-    temp_range_centered = temp_range - mean_temp
+    temp_range_cold = np.minimum(temp_range, best_kink)
+    temp_range_hot = np.maximum(0, temp_range - best_kink)
     
     # Weekend line (Sat/Sun, no special events)
-    y_weekend = ols_model.params['const'] + (ols_model.params['Temp_Centered'] * temp_range_centered) + ols_model.params['is_weekend']
+    y_weekend = (ols_model.params['const'] + 
+                 (ols_model.params['temp_cold'] * temp_range_cold) + 
+                 (ols_model.params['temp_hot'] * temp_range_hot) + 
+                 ols_model.params['is_weekend'])
     # Midweek line (Tue-Thu, no special events)
-    y_midweek = ols_model.params['const'] + (ols_model.params['Temp_Centered'] * temp_range_centered)
+    y_midweek = (ols_model.params['const'] + 
+                 (ols_model.params['temp_cold'] * temp_range_cold) + 
+                 (ols_model.params['temp_hot'] * temp_range_hot))
     
     fig.add_trace(go.Scatter(x=temp_range, y=y_weekend, name='Weekend Baseline',
                             line=dict(color='#DAA520', width=4), mode='lines'))
@@ -533,7 +542,7 @@ try:
                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     st.plotly_chart(fig, use_container_width=True)
     
-    st.caption("📊 Baseline relationships shown. Model with year controls includes 12 features: Temp, Weekend(Sat/Sun), Rain (vs Clear), Snow (vs Clear), Federal Payday, Payday Weekend, Weekly Friday, Semi-Monthly (15th/Last), Semi-Monthly×Weekend, Year 2024, Year 2025, and 2026×Friday (Navy base strengthening).")
+    st.caption(f"📊 Baseline relationships shown. Piecewise temperature model with kink at {best_kink}°F. Lines show 'hockey stick' pattern: flat below kink, steep decline above. Model includes 14 features.")
 
 except Exception as e:
     st.error(f"Model Diagnostics Error: {e}")

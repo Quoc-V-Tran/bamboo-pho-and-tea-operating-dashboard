@@ -181,10 +181,6 @@ try:
         (merged['Day_of_Week'] != 'Monday') & 
         (merged['Bowls_Sold'] > 0)
     ].copy()
-    
-    # Center temperature variable (subtract mean)
-    mean_temp = model_df['Temp_High'].mean()
-    model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
 
     st.title("🍜 Daily Insights")
     
