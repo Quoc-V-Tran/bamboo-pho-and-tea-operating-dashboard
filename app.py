@@ -281,10 +281,10 @@ try:
         with col_b:
             tomorrow_is_snow = st.checkbox("Snow/Flurries", value=False)
         
-        st.markdown("**💰 Federal Payday (NSA)**")
+        st.markdown("**💰 Payday**")
         col_c, col_d = st.columns(2)
         with col_c:
-            tomorrow_is_fed_payday = st.checkbox("Federal Payday Friday", value=False, help="Bi-weekly NSA")
+            tomorrow_is_fed_payday = st.checkbox("Payday Friday", value=False)
         with col_d:
             tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after)", value=False)
         
@@ -362,31 +362,6 @@ try:
         
         st.info("💡 For detailed model performance metrics and diagnostics, see the **Model Diagnostics** page in the sidebar.")
 
-    st.divider()
-    
-    # --- TEMPERATURE KINK POINT ANALYSIS ---
-    st.subheader("🌡️ Temperature Kink Point Analysis")
-    
-    st.markdown(f"""
-    **Piecewise Temperature Model**: Tests whether temperature affects demand **non-linearly** with a threshold.
-    
-    - **Below {optimal_kink}°F**: Cold enough for pho (coefficient: {kink_cold_coef:.4f})
-    - **Above {optimal_kink}°F**: Each degree warmer reduces demand (coefficient: {kink_hot_coef:.4f})
-    """)
-    
-    # Display kink point comparison table
-    kink_df = pd.DataFrame(kink_results)
-    kink_df.columns = ['Kink (°F)', 'R²', 'Cold Coef', 'Hot Coef', 'Cold p-value', 'Hot p-value']
-    kink_df['Cold Coef'] = kink_df['Cold Coef'].apply(lambda x: f"{x:.4f}")
-    kink_df['Hot Coef'] = kink_df['Hot Coef'].apply(lambda x: f"{x:.4f}")
-    kink_df['Cold p-value'] = kink_df['Cold p-value'].apply(lambda x: f"{x:.4f}")
-    kink_df['Hot p-value'] = kink_df['Hot p-value'].apply(lambda x: f"{x:.4f}")
-    kink_df['R²'] = kink_df['R²'].apply(lambda x: f"{x:.4f}")
-    
-    st.dataframe(kink_df, hide_index=True, use_container_width=True)
-    
-    st.caption(f"✅ **Optimal Kink: {optimal_kink}°F** (highest R²)")
-    
     st.divider()
     
     # --- LINE CHART: Pho Bowls vs Daily High Temperature ---

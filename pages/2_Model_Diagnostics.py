@@ -487,6 +487,56 @@ try:
     st.caption(f"Observations: {int(ols_model.nobs)} | Residual Std. Error: {np.sqrt(ols_model.mse_resid):.3f} | MAE: Mean Absolute Error")
     
     st.divider()
+    
+    # --- TEMPERATURE KINK POINT ANALYSIS ---
+    st.subheader("🌡️ Temperature Kink Point Analysis")
+    
+    st.markdown(f"""
+    **Piecewise Temperature Model**: Tests whether temperature affects demand **non-linearly** with a threshold (kink).
+    
+    - **Below {best_kink}°F**: Cold enough for pho (coefficient: {ols_model.params['temp_cold']:.4f})
+    - **Above {best_kink}°F**: Each degree warmer reduces demand (coefficient: {ols_model.params['temp_hot']:.4f})
+    
+    This "hockey stick" pattern captures that pho demand is strong in cold weather, but as temperatures rise,
+    customers shift to other options like banh mi or fresh salads.
+    """)
+    
+    # Display kink point comparison table
+    kink_results_for_display = []
+    for kink_val in [50, 55, 60, 65, 70]:
+        # Recreate the kink analysis for display
+        model_df[f'temp_cold_{kink_val}'] = model_df['Temp_High'].apply(lambda t: min(t, kink_val))
+        model_df[f'temp_hot_{kink_val}'] = model_df['Temp_High'].apply(lambda t: max(0, t - kink_val))
+        
+        X_display = model_df[[f'temp_cold_{kink_val}', f'temp_hot_{kink_val}', 
+                             'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
+                             'is_payday_weekend',
+                             'is_2024', 'is_2025', 'season_impact']]
+        X_display = sm.add_constant(X_display)
+        y_display = model_df['Bowls_Sold']
+        model_display = sm.OLS(y_display, X_display).fit()
+        
+        kink_results_for_display.append({
+            'Kink (°F)': kink_val,
+            'R²': model_display.rsquared,
+            'Cold Coef': model_display.params[f'temp_cold_{kink_val}'],
+            'Hot Coef': model_display.params[f'temp_hot_{kink_val}'],
+            'Cold p-value': model_display.pvalues[f'temp_cold_{kink_val}'],
+            'Hot p-value': model_display.pvalues[f'temp_hot_{kink_val}']
+        })
+    
+    kink_display_df = pd.DataFrame(kink_results_for_display)
+    kink_display_df['Cold Coef'] = kink_display_df['Cold Coef'].apply(lambda x: f"{x:.4f}")
+    kink_display_df['Hot Coef'] = kink_display_df['Hot Coef'].apply(lambda x: f"{x:.4f}")
+    kink_display_df['Cold p-value'] = kink_display_df['Cold p-value'].apply(lambda x: f"{x:.4f}")
+    kink_display_df['Hot p-value'] = kink_display_df['Hot p-value'].apply(lambda x: f"{x:.4f}")
+    kink_display_df['R²'] = kink_display_df['R²'].apply(lambda x: f"{x:.4f}")
+    
+    st.dataframe(kink_display_df, hide_index=True, use_container_width=True)
+    
+    st.caption(f"✅ **Optimal Kink: {best_kink}°F** (highest R²)")
+    
+    st.divider()
 
     # --- SCATTER PLOT WITH REGRESSION LINES ---
     st.subheader("🌡️ Temperature vs Bowls Sold")
