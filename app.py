@@ -74,50 +74,8 @@ try:
     
     # --- FEATURE ENGINEERING ---
     
-    # Binary features
+    # Binary feature: Weekend (Fri, Sat, Sun)
     merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
-    merged['is_precipitation'] = (merged['Precip_Type'] != 'Clear').astype(int)
-    
-    # Payday Effect: Flag days within 4 days after 15th and 30th/last day of month
-    merged['day_of_month'] = pd.to_datetime(merged['Date']).dt.day
-    merged['days_in_month'] = pd.to_datetime(merged['Date']).dt.days_in_month
-    merged['is_payday_effect'] = (
-        # 4 days after 15th (days 16-19)
-        ((merged['day_of_month'] >= 16) & (merged['day_of_month'] <= 19)) |
-        # 4 days after month end (days 1-4 of month OR last 4 days wrapping to next month)
-        ((merged['day_of_month'] >= 1) & (merged['day_of_month'] <= 4)) |
-        # Handle last day payday for months with 30/31 days (days 31, 1-4)
-        (merged['day_of_month'] >= merged['days_in_month'])
-    ).astype(int)
-    
-    # Holiday Effect: Flag 2 days before major holidays
-    # Define major holidays for 2025-2026
-    major_holidays = {
-        # 2025 Holidays
-        pd.Timestamp('2025-05-26'): 'Memorial Day',       # Last Monday in May
-        pd.Timestamp('2025-07-04'): 'July 4th',
-        pd.Timestamp('2025-09-01'): 'Labor Day',          # First Monday in Sept
-        pd.Timestamp('2025-11-27'): 'Thanksgiving',       # 4th Thursday in Nov
-        pd.Timestamp('2025-12-25'): 'Christmas',
-        pd.Timestamp('2025-04-20'): 'Easter',             # 2025 Easter
-        pd.Timestamp('2025-02-09'): 'Super Bowl',         # 2025 Super Bowl
-        # 2026 Holidays
-        pd.Timestamp('2026-05-25'): 'Memorial Day',
-        pd.Timestamp('2026-07-04'): 'July 4th',
-        pd.Timestamp('2026-09-07'): 'Labor Day',
-        pd.Timestamp('2026-11-26'): 'Thanksgiving',
-        pd.Timestamp('2026-12-25'): 'Christmas',
-        pd.Timestamp('2026-04-05'): 'Easter',             # 2026 Easter
-        pd.Timestamp('2026-02-08'): 'Super Bowl',         # 2026 Super Bowl
-    }
-    
-    merged['is_pre_holiday'] = 0
-    for holiday_date in major_holidays.keys():
-        # Flag BOTH 1 day before AND 2 days before holiday (within 2 days)
-        merged.loc[
-            pd.to_datetime(merged['Date']).isin([holiday_date - pd.Timedelta(days=1), holiday_date - pd.Timedelta(days=2)]),
-            'is_pre_holiday'
-        ] = 1
     
     # Filter for active days only (Exclude Mondays/zeros)
     model_df = merged[
@@ -128,9 +86,6 @@ try:
     # Center temperature variable (subtract mean)
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
-    
-    # Interaction term: Precipitation × Centered Temperature
-    model_df['precip_temp_interaction'] = model_df['is_precipitation'] * model_df['Temp_Centered']
 
     st.title("🍜 Daily Insights")
     
@@ -141,10 +96,11 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD ENHANCED MODEL WITH INTERACTION + PAYDAY + HOLIDAY EFFECTS ---
-    # Bowls_Sold ~ Intercept + Temp_Centered + is_precipitation + (is_precipitation × Temp_Centered) + is_weekend + is_payday_effect + is_pre_holiday
+    # --- BUILD SIMPLE, PARSIMONIOUS MODEL ---
+    # Bowls_Sold ~ Intercept + Temp_Centered + is_weekend
     # Note: Temperature is centered (mean subtracted) so intercept = predicted bowls at average temp
-    X = model_df[['Temp_Centered', 'is_precipitation', 'precip_temp_interaction', 'is_weekend', 'is_payday_effect', 'is_pre_holiday']]
+    # Only statistically significant features included (p < 0.05)
+    X = model_df[['Temp_Centered', 'is_weekend']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -158,53 +114,40 @@ try:
         st.subheader("Enter Tomorrow's Forecast")
         tomorrow_temp = st.number_input("Temperature (°F)", min_value=0, max_value=100, value=35, step=1)
         tomorrow_is_weekend = st.checkbox("Weekend Day (Fri-Sun)", value=False)
-        tomorrow_has_precip = st.checkbox("Precipitation Expected", value=False)
-        tomorrow_is_payday = st.checkbox("Payday Effect (4 days after 15th or month-end)", value=False)
-        tomorrow_is_pre_holiday = st.checkbox("Pre-Holiday (2 days before major holiday)", value=False)
         
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
         
-        # Calculate interaction term with centered temperature
-        tomorrow_interaction = (1 if tomorrow_has_precip else 0) * tomorrow_temp_centered
-        
-        # Calculate prediction
+        # Calculate prediction (Simple Model: Temperature + Weekend)
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
-                        (ols_model.params['is_precipitation'] * (1 if tomorrow_has_precip else 0)) +
-                        (ols_model.params['precip_temp_interaction'] * tomorrow_interaction) +
-                        (ols_model.params['is_weekend'] * (1 if tomorrow_is_weekend else 0)) +
-                        (ols_model.params['is_payday_effect'] * (1 if tomorrow_is_payday else 0)) +
-                        (ols_model.params['is_pre_holiday'] * (1 if tomorrow_is_pre_holiday else 0)))
+                        (ols_model.params['is_weekend'] * (1 if tomorrow_is_weekend else 0)))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Enhanced OLS model with 7 features (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Parsimonious OLS model with 2 features (Mean temp: {mean_temp:.1f}°F)")
     
     with pred_col2:
         st.subheader("📊 Historical Stats & Model Coefficients")
         
-        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+        stat_col1, stat_col2, stat_col3 = st.columns(3)
         
         with stat_col1:
             avg_bowls = model_df['Bowls_Sold'].mean()
             st.metric("Avg Daily Bowls", f"{avg_bowls:.1f}")
-            st.metric("Weekend Lift", f"+{ols_model.params['is_weekend']:.1f}")
+            st.metric("Total Bowls", f"{int(model_df['Bowls_Sold'].sum())}")
         
         with stat_col2:
-            st.metric("Temp Effect", f"{ols_model.params['Temp_Centered']:.2f}/°F")
-            st.metric("Precip Impact", f"{ols_model.params['is_precipitation']:+.1f}",
-                     help=f"At avg temp ({mean_temp:.1f}°F)")
+            st.metric("🌡️ Temp Effect", f"{ols_model.params['Temp_Centered']:.2f}/°F",
+                     help="Colder weather = More pho!")
+            st.metric("📅 Weekend Lift", f"+{ols_model.params['is_weekend']:.1f} bowls",
+                     help="Fri/Sat/Sun boost")
         
         with stat_col3:
-            st.metric("💰 Payday Boost", f"+{ols_model.params['is_payday_effect']:.1f}",
-                     help="4 days after 15th or month-end")
-            st.metric("🎉 Holiday Boost", f"+{ols_model.params['is_pre_holiday']:.1f}",
-                     help="2 days before major holiday")
-        
-        with stat_col4:
-            st.metric("Model R²", f"{ols_model.rsquared:.3f}")
-            st.metric("Total Bowls", f"{int(model_df['Bowls_Sold'].sum())}")
+            st.metric("Model R²", f"{ols_model.rsquared:.3f}",
+                     help="Proportion of variance explained")
+            st.metric("Adj. R²", f"{ols_model.rsquared_adj:.3f}",
+                     help="Adjusted for # of predictors")
 
     st.divider()
     

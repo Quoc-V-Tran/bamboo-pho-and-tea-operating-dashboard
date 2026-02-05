@@ -80,35 +80,6 @@ try:
     
     # --- FEATURE ENGINEERING ---
     merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
-    merged['is_precipitation'] = (merged['Precip_Type'] != 'Clear').astype(int)
-    
-    # Payday Effect: Flag days within 4 days after 15th and 30th/last day of month
-    merged['day_of_month'] = pd.to_datetime(merged['Date']).dt.day
-    merged['days_in_month'] = pd.to_datetime(merged['Date']).dt.days_in_month
-    merged['is_payday_effect'] = (
-        ((merged['day_of_month'] >= 16) & (merged['day_of_month'] <= 19)) |
-        ((merged['day_of_month'] >= 1) & (merged['day_of_month'] <= 4)) |
-        (merged['day_of_month'] >= merged['days_in_month'])
-    ).astype(int)
-    
-    # Holiday Effect: Flag 2 days before major holidays
-    major_holidays = {
-        pd.Timestamp('2025-05-26'): 'Memorial Day', pd.Timestamp('2025-07-04'): 'July 4th',
-        pd.Timestamp('2025-09-01'): 'Labor Day', pd.Timestamp('2025-11-27'): 'Thanksgiving',
-        pd.Timestamp('2025-12-25'): 'Christmas', pd.Timestamp('2025-04-20'): 'Easter',
-        pd.Timestamp('2025-02-09'): 'Super Bowl', pd.Timestamp('2026-05-25'): 'Memorial Day',
-        pd.Timestamp('2026-07-04'): 'July 4th', pd.Timestamp('2026-09-07'): 'Labor Day',
-        pd.Timestamp('2026-11-26'): 'Thanksgiving', pd.Timestamp('2026-12-25'): 'Christmas',
-        pd.Timestamp('2026-04-05'): 'Easter', pd.Timestamp('2026-02-08'): 'Super Bowl',
-    }
-    
-    merged['is_pre_holiday'] = 0
-    for holiday_date in major_holidays.keys():
-        # Flag BOTH 1 day before AND 2 days before holiday (within 2 days)
-        merged.loc[
-            pd.to_datetime(merged['Date']).isin([holiday_date - pd.Timedelta(days=1), holiday_date - pd.Timedelta(days=2)]),
-            'is_pre_holiday'
-        ] = 1
     
     # Prepare model data
     model_df = merged[
@@ -119,10 +90,9 @@ try:
     # Center temperature
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
-    model_df['precip_temp_interaction'] = model_df['is_precipitation'] * model_df['Temp_Centered']
     
-    # Run Enhanced OLS regression
-    X = model_df[['Temp_Centered', 'is_precipitation', 'precip_temp_interaction', 'is_weekend', 'is_payday_effect', 'is_pre_holiday']]
+    # Run Simple, Parsimonious OLS regression (only significant features)
+    X = model_df[['Temp_Centered', 'is_weekend']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -139,11 +109,7 @@ try:
         recent_df['Predicted'] = (
             ols_model.params['const'] + 
             (ols_model.params['Temp_Centered'] * recent_df['Temp_Centered']) +
-            (ols_model.params['is_precipitation'] * recent_df['is_precipitation']) +
-            (ols_model.params['precip_temp_interaction'] * recent_df['precip_temp_interaction']) +
-            (ols_model.params['is_weekend'] * recent_df['is_weekend']) +
-            (ols_model.params['is_payday_effect'] * recent_df['is_payday_effect']) +
-            (ols_model.params['is_pre_holiday'] * recent_df['is_pre_holiday'])
+            (ols_model.params['is_weekend'] * recent_df['is_weekend'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -206,11 +172,7 @@ try:
     var_names = {
         'const': f'Intercept (at {mean_temp:.1f}°F avg temp)',
         'Temp_Centered': 'Temperature (centered)',
-        'is_precipitation': 'Precipitation',
-        'precip_temp_interaction': 'Precip × Temp (interaction)',
-        'is_weekend': 'Weekend',
-        'is_payday_effect': 'Payday Effect (4 days after 15th/month-end)',
-        'is_pre_holiday': 'Pre-Holiday (2 days before major holiday)'
+        'is_weekend': 'Weekend (Fri/Sat/Sun)'
     }
     
     for var in params.index:
@@ -256,61 +218,42 @@ try:
     # --- SCATTER PLOT WITH REGRESSION LINES ---
     st.subheader("🌡️ Temperature vs Bowls Sold (Operating Days Only)")
     
-    fig = px.scatter(model_df, x='Temp_High', y='Bowls_Sold', color='Precip_Type',
+    # Create scatter plot colored by weekend vs midweek
+    model_df['Day_Type'] = model_df['is_weekend'].apply(lambda x: 'Weekend (Fri/Sat/Sun)' if x == 1 else 'Midweek (Tue/Wed/Thu)')
+    
+    fig = px.scatter(model_df, x='Temp_High', y='Bowls_Sold', color='Day_Type',
                      color_discrete_map={
-                         "Clear": "#D3D3D3", "Flurries": "#E0F2FE", "Snow": "#7DD3FC",
-                         "Mixed": "#38BDF8", "Rain": "#1E3A8A", "Heavy Snow": "#FF0000"
+                         'Weekend (Fri/Sat/Sun)': '#DAA520',
+                         'Midweek (Tue/Wed/Thu)': '#1E88E5'
                      },
-                     hover_name='Day_of_Week',
+                     hover_data=['Date', 'Day_of_Week'],
                      labels={'Temp_High': 'Temperature (°F)', 'Bowls_Sold': 'Bowls Sold'})
     
-    # Regression Lines with interaction term
+    # Regression Lines
     temp_range = np.linspace(model_df['Temp_High'].min(), model_df['Temp_High'].max(), 100)
     temp_range_centered = temp_range - mean_temp  # Center for model prediction
     
-    # Weekend + Clear weather (baseline: no payday, no pre-holiday)
-    y_weekend_clear = (ols_model.params['const'] + 
-                      (ols_model.params['Temp_Centered'] * temp_range_centered) + 
-                      (ols_model.params['is_weekend'] * 1) +
-                      (ols_model.params['is_precipitation'] * 0) +
-                      (ols_model.params['precip_temp_interaction'] * 0) +
-                      (ols_model.params['is_payday_effect'] * 0) +
-                      (ols_model.params['is_pre_holiday'] * 0))
+    # Weekend regression line
+    y_weekend = (ols_model.params['const'] + 
+                (ols_model.params['Temp_Centered'] * temp_range_centered) + 
+                (ols_model.params['is_weekend'] * 1))
     
-    # Midweek + Clear weather (baseline: no payday, no pre-holiday)
-    y_midweek_clear = (ols_model.params['const'] + 
-                      (ols_model.params['Temp_Centered'] * temp_range_centered) +
-                      (ols_model.params['is_precipitation'] * 0) +
-                      (ols_model.params['precip_temp_interaction'] * 0) +
-                      (ols_model.params['is_payday_effect'] * 0) +
-                      (ols_model.params['is_pre_holiday'] * 0))
-    
-    # Weekend + Precipitation (interaction effect kicks in, baseline: no payday, no pre-holiday)
-    y_weekend_precip = (ols_model.params['const'] + 
-                       (ols_model.params['Temp_Centered'] * temp_range_centered) + 
-                       (ols_model.params['is_weekend'] * 1) +
-                       (ols_model.params['is_precipitation'] * 1) +
-                       (ols_model.params['precip_temp_interaction'] * temp_range_centered) +
-                       (ols_model.params['is_payday_effect'] * 0) +
-                       (ols_model.params['is_pre_holiday'] * 0))
-    
-    # Midweek + Precipitation (interaction effect kicks in, baseline: no payday, no pre-holiday)
-    y_midweek_precip = (ols_model.params['const'] + 
-                       (ols_model.params['Temp_Centered'] * temp_range_centered) +
-                       (ols_model.params['is_precipitation'] * 1) +
-                       (ols_model.params['precip_temp_interaction'] * temp_range_centered) +
-                       (ols_model.params['is_payday_effect'] * 0) +
-                       (ols_model.params['is_pre_holiday'] * 0))
+    # Midweek regression line
+    y_midweek = (ols_model.params['const'] + 
+                (ols_model.params['Temp_Centered'] * temp_range_centered))
 
     # Plot regression lines
-    fig.add_trace(go.Scatter(x=temp_range, y=y_weekend_clear, name='Weekend (Clear)', line=dict(color='#DAA520', width=3)))
-    fig.add_trace(go.Scatter(x=temp_range, y=y_midweek_clear, name='Midweek (Clear)', line=dict(color='#DAA520', width=3, dash='dash')))
-    fig.add_trace(go.Scatter(x=temp_range, y=y_weekend_precip, name='Weekend (Precip)', line=dict(color='#1E88E5', width=3)))
-    fig.add_trace(go.Scatter(x=temp_range, y=y_midweek_precip, name='Midweek (Precip)', line=dict(color='#1E88E5', width=3, dash='dash')))
+    fig.add_trace(go.Scatter(x=temp_range, y=y_weekend, name='Weekend Trend', 
+                            line=dict(color='#DAA520', width=4), mode='lines'))
+    fig.add_trace(go.Scatter(x=temp_range, y=y_midweek, name='Midweek Trend', 
+                            line=dict(color='#1E88E5', width=4, dash='dash'), mode='lines'))
     
-    fig.update_traces(marker=dict(size=12, line=dict(width=1, color='black')))
-    fig.update_layout(template="simple_white", hovermode="closest")
+    fig.update_traces(marker=dict(size=10, opacity=0.6))
+    fig.update_layout(template="simple_white", hovermode="closest", 
+                     legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     st.plotly_chart(fig, use_container_width=True)
+    
+    st.caption("📊 Simple linear model: Higher temperature = Fewer bowls sold (people want warm pho when it's cold!)")
 
 except Exception as e:
     st.error(f"Model Diagnostics Error: {e}")
