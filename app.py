@@ -118,74 +118,22 @@ try:
     # 3. Friday Base Traffic (NSA Mechanicsburg lunch rush)
     merged['is_friday_base'] = (merged['Day_of_Week'] == 'Friday').astype(int)
     
-    # --- HOLIDAY PROXIMITY EFFECTS ---
-    # Define all major holidays for 2025-2026
-    major_holidays = [
-        # 2025 Holidays
-        pd.Timestamp('2025-01-01'),  # New Year's
-        pd.Timestamp('2025-01-29'),  # Lunar New Year
-        pd.Timestamp('2025-02-09'),  # Super Bowl Sunday
-        pd.Timestamp('2025-02-14'),  # Valentine's Day
-        pd.Timestamp('2025-04-20'),  # Easter
-        pd.Timestamp('2025-05-26'),  # Memorial Day
-        pd.Timestamp('2025-07-04'),  # July 4th
-        pd.Timestamp('2025-09-01'),  # Labor Day
-        pd.Timestamp('2025-11-27'),  # Thanksgiving
-        pd.Timestamp('2025-12-25'),  # Christmas
-        # 2026 Holidays
-        pd.Timestamp('2026-01-01'),  # New Year's
-        pd.Timestamp('2026-02-17'),  # Lunar New Year
-        pd.Timestamp('2026-02-08'),  # Super Bowl Sunday
-        pd.Timestamp('2026-02-14'),  # Valentine's Day
-        pd.Timestamp('2026-04-05'),  # Easter
-        pd.Timestamp('2026-05-25'),  # Memorial Day
-        pd.Timestamp('2026-07-04'),  # July 4th
-        pd.Timestamp('2026-09-07'),  # Labor Day
-        pd.Timestamp('2026-11-26'),  # Thanksgiving
-        pd.Timestamp('2026-12-25'),  # Christmas
-    ]
+    # --- PRIVATE SECTOR PAYDAY EFFECTS ---
+    # Every Friday = General payday for many local workers
+    merged['is_weekly_friday'] = (merged['Day_of_Week'] == 'Friday').astype(int)
     
-    # Pre-Holiday: 1-2 days before major holidays
-    merged['is_pre_holiday'] = 0
-    for holiday in major_holidays:
-        merged.loc[merged['Date_dt'].isin([holiday - pd.Timedelta(days=1), holiday - pd.Timedelta(days=2)]), 'is_pre_holiday'] = 1
+    # Semi-monthly paydays: 15th and last day of each month
+    merged['is_semi_monthly'] = 0
+    merged.loc[merged['Date_dt'].dt.day == 15, 'is_semi_monthly'] = 1
+    merged.loc[merged['Date_dt'].dt.day == merged['Date_dt'].dt.days_in_month, 'is_semi_monthly'] = 1
     
-    # Post-Holiday: 1-2 days after major holidays
-    merged['is_post_holiday'] = 0
-    for holiday in major_holidays:
-        merged.loc[merged['Date_dt'].isin([holiday + pd.Timedelta(days=1), holiday + pd.Timedelta(days=2)]), 'is_post_holiday'] = 1
+    # Interaction: Semi-monthly payday × Weekend (15th/month-end on Fri-Sun = massive weekend)
+    merged['is_semi_monthly_weekend'] = (merged['is_semi_monthly'] * merged['is_weekend']).astype(int)
     
-    # Valentine's Period: Feb 13-15 (massive pho window)
-    merged['is_valentines_period'] = merged['Date_dt'].isin([
-        pd.Timestamp('2025-02-13'), pd.Timestamp('2025-02-14'), pd.Timestamp('2025-02-15'),
-        pd.Timestamp('2026-02-13'), pd.Timestamp('2026-02-14'), pd.Timestamp('2026-02-15')
-    ]).astype(int)
-    
-    # Lunar New Year 3-day window: 2025 (Jan 29-31), 2026 (Feb 17-19)
-    merged['is_lunar_new_year'] = merged['Date_dt'].isin([
-        pd.Timestamp('2025-01-29'), pd.Timestamp('2025-01-30'), pd.Timestamp('2025-01-31'),
-        pd.Timestamp('2026-02-17'), pd.Timestamp('2026-02-18'), pd.Timestamp('2026-02-19')
-    ]).astype(int)
-    
-    # Interaction: Pre-Holiday × Friday ('I'm not cooking before the long weekend')
-    merged['is_pre_holiday_friday'] = (merged['is_pre_holiday'] * merged['is_friday_base']).astype(int)
-    
-    # --- AUTOREGRESSIVE (LAGGED) FEATURES ---
-    # Sort by date to ensure proper lag calculation
-    merged = merged.sort_values('Date_dt').reset_index(drop=True)
-    
-    # lag_1: Previous day's sales (immediate momentum)
-    merged['lag_1'] = merged['Bowls_Sold'].shift(1)
-    
-    # lag_7: Sales from 7 days ago (weekly patterns)
-    merged['lag_7'] = merged['Bowls_Sold'].shift(7)
-    
-    # Filter for active days only (Exclude Mondays, zero sales, AND missing lag data)
+    # Filter for active days only (Exclude Mondays and zero sales)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
-        (merged['Bowls_Sold'] > 0) &
-        (merged['lag_1'].notna()) &
-        (merged['lag_7'].notna())
+        (merged['Bowls_Sold'] > 0)
     ].copy()
     
     # Center temperature variable (subtract mean)
@@ -201,14 +149,11 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD STREAMLINED MODEL WITH AUTOREGRESSIVE FEATURES ---
+    # --- BUILD SIMPLIFIED PAYDAY-FOCUSED MODEL ---
     # Bowls_Sold ~ Temp + Weekend(Sat/Sun) + Mixed + Federal_Payday + Payday_Weekend + 
-    #              Friday_Base + Pre_Holiday + Post_Holiday + Valentines + Lunar_NY + 
-    #              Pre_Holiday×Friday + lag_1 + lag_7
+    #              Weekly_Friday + Semi_Monthly + Semi_Monthly×Weekend
     X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 
-                  'is_payday_weekend', 'is_friday_base', 'is_pre_holiday', 'is_post_holiday',
-                  'is_valentines_period', 'is_lunar_new_year', 'is_pre_holiday_friday',
-                  'lag_1', 'lag_7']]
+                  'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -235,42 +180,21 @@ try:
             tomorrow_is_weekend = st.checkbox("Weekend (Sat/Sun)", value=False)
             tomorrow_is_mixed = st.checkbox("Mixed Precip", value=False)
         with col_b:
-            tomorrow_is_friday_base = st.checkbox("Friday", value=False, help="Base traffic")
-            tomorrow_is_fed_payday = st.checkbox("Fed Payday Fri", value=False, help="Bi-weekly")
+            tomorrow_is_weekly_friday = st.checkbox("Friday (General Payday)", value=False)
+            tomorrow_is_semi_monthly = st.checkbox("Semi-Monthly (15th or Last Day)", value=False)
         
-        st.markdown("**🎉 Holiday Effects**")
+        st.markdown("**🏛️ Federal Payday (NSA Mechanicsburg)**")
         col_c, col_d = st.columns(2)
         with col_c:
-            tomorrow_is_pre_holiday = st.checkbox("Pre-Holiday (1-2 days before)", value=False)
-            tomorrow_is_post_holiday = st.checkbox("Post-Holiday (1-2 days after)", value=False)
+            tomorrow_is_fed_payday = st.checkbox("Federal Payday Friday", value=False, help="Bi-weekly")
         with col_d:
-            tomorrow_is_valentines = st.checkbox("Valentine's Period (Feb 13-15)", value=False)
-            tomorrow_is_lunar_ny = st.checkbox("Lunar New Year (3-day window)", value=False)
-        
-        tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after fed payday)", value=False)
-        
-        st.markdown("**📊 Lagged Sales (Autoregressive)**")
-        # Get most recent sales data as defaults
-        most_recent_day = model_df.iloc[-1]
-        day_7_ago = model_df.iloc[-7] if len(model_df) >= 7 else most_recent_day
-        
-        col_e, col_f = st.columns(2)
-        with col_e:
-            tomorrow_lag_1 = st.number_input("Today's Actual Sales", 
-                                            min_value=0, max_value=200, 
-                                            value=int(most_recent_day['Bowls_Sold']),
-                                            help="Actual bowls sold today (lag_1)")
-        with col_f:
-            tomorrow_lag_7 = st.number_input("Sales 7 Days Ago", 
-                                            min_value=0, max_value=200, 
-                                            value=int(day_7_ago['Bowls_Sold']),
-                                            help="Bowls sold same day last week (lag_7)")
+            tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after)", value=False)
         
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
         
-        # Interaction
-        tomorrow_pre_hol_fri = (1 if tomorrow_is_pre_holiday else 0) * (1 if tomorrow_is_friday_base else 0)
+        # Interaction: Semi-monthly payday × Weekend
+        tomorrow_semi_wknd = (1 if tomorrow_is_semi_monthly else 0) * (1 if tomorrow_is_weekend else 0)
         
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
@@ -278,23 +202,18 @@ try:
                         (ols_model.params['is_mixed_precip'] * (1 if tomorrow_is_mixed else 0)) +
                         (ols_model.params['is_federal_payday'] * (1 if tomorrow_is_fed_payday else 0)) +
                         (ols_model.params['is_payday_weekend'] * (1 if tomorrow_is_payday_wknd else 0)) +
-                        (ols_model.params['is_friday_base'] * (1 if tomorrow_is_friday_base else 0)) +
-                        (ols_model.params['is_pre_holiday'] * (1 if tomorrow_is_pre_holiday else 0)) +
-                        (ols_model.params['is_post_holiday'] * (1 if tomorrow_is_post_holiday else 0)) +
-                        (ols_model.params['is_valentines_period'] * (1 if tomorrow_is_valentines else 0)) +
-                        (ols_model.params['is_lunar_new_year'] * (1 if tomorrow_is_lunar_ny else 0)) +
-                        (ols_model.params['is_pre_holiday_friday'] * tomorrow_pre_hol_fri) +
-                        (ols_model.params['lag_1'] * tomorrow_lag_1) +
-                        (ols_model.params['lag_7'] * tomorrow_lag_7))
+                        (ols_model.params['is_weekly_friday'] * (1 if tomorrow_is_weekly_friday else 0)) +
+                        (ols_model.params['is_semi_monthly'] * (1 if tomorrow_is_semi_monthly else 0)) +
+                        (ols_model.params['is_semi_monthly_weekend'] * tomorrow_semi_wknd))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Autoregressive model with lagged features (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Payday-focused model with 8 features (Mean temp: {mean_temp:.1f}°F)")
     
     with pred_col2:
         st.subheader("📊 Model Performance")
         
-        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+        stat_col1, stat_col2, stat_col3 = st.columns(3)
         
         with stat_col1:
             st.markdown("**Fit Metrics**")
@@ -303,32 +222,23 @@ try:
             st.metric("Adj. R²", f"{ols_model.rsquared_adj:.3f}")
             st.metric("MAE", f"{mae:.2f} bowls",
                      help="Mean Absolute Error")
+            st.metric("F-stat", f"{ols_model.fvalue:.1f}",
+                     help="Model significance")
         
         with stat_col2:
-            st.markdown("**Core**")
+            st.markdown("**Core Effects**")
             st.metric("🌡️ Temp", f"{ols_model.params['Temp_Centered']:.2f}/°F")
             st.metric("📅 Weekend", f"+{ols_model.params['is_weekend']:.1f}")
-            st.metric("🏛️ Friday", f"+{ols_model.params['is_friday_base']:.1f}")
+            st.metric("🌧️ Mixed", f"+{ols_model.params['is_mixed_precip']:.1f}")
         
         with stat_col3:
-            st.markdown("**Holidays**")
-            st.metric("🎉 Pre-Hol", f"{ols_model.params['is_pre_holiday']:+.1f}")
-            st.metric("💝 V-Day", f"{ols_model.params['is_valentines_period']:+.1f}")
-            st.metric("🧧 Lunar", f"{ols_model.params['is_lunar_new_year']:+.1f}")
-        
-        with stat_col4:
-            st.markdown("**Momentum**")
-            st.metric("📊 lag_1", f"{ols_model.params['lag_1']:.3f}",
-                     help="Yesterday's sales coefficient")
-            st.metric("📊 lag_7", f"{ols_model.params['lag_7']:.3f}",
-                     help="7 days ago coefficient")
-            
-            # Calculate p-values for lags
-            p_lag1 = ols_model.pvalues['lag_1']
-            p_lag7 = ols_model.pvalues['lag_7']
-            sig1 = "***" if p_lag1 < 0.001 else "**" if p_lag1 < 0.01 else "*" if p_lag1 < 0.05 else "ns"
-            sig7 = "***" if p_lag7 < 0.001 else "**" if p_lag7 < 0.01 else "*" if p_lag7 < 0.05 else "ns"
-            st.caption(f"lag_1: {sig1} | lag_7: {sig7}")
+            st.markdown("**Payday Effects**")
+            st.metric("📆 Fri", f"+{ols_model.params['is_weekly_friday']:.1f}",
+                     help="General Friday payday")
+            st.metric("💰 15th/Last", f"+{ols_model.params['is_semi_monthly']:.1f}",
+                     help="Semi-monthly paydays")
+            st.metric("💰×📅", f"+{ols_model.params['is_semi_monthly_weekend']:.1f}",
+                     help="Semi-monthly × Weekend")
 
     st.divider()
     

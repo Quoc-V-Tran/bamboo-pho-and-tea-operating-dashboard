@@ -148,28 +148,26 @@ try:
     
     merged['is_pre_holiday_friday'] = (merged['is_pre_holiday'] * merged['is_friday_base']).astype(int)
     
-    # Autoregressive (Lagged) Features
-    merged = merged.sort_values('Date_dt').reset_index(drop=True)
-    merged['lag_1'] = merged['Bowls_Sold'].shift(1)
-    merged['lag_7'] = merged['Bowls_Sold'].shift(7)
+    # Private Sector Payday Effects
+    merged['is_weekly_friday'] = (merged['Day_of_Week'] == 'Friday').astype(int)
+    merged['is_semi_monthly'] = 0
+    merged.loc[merged['Date_dt'].dt.day == 15, 'is_semi_monthly'] = 1
+    merged.loc[merged['Date_dt'].dt.day == merged['Date_dt'].dt.days_in_month, 'is_semi_monthly'] = 1
+    merged['is_semi_monthly_weekend'] = (merged['is_semi_monthly'] * merged['is_weekend']).astype(int)
     
-    # Prepare model data (exclude Mondays, zero sales, and missing lags)
+    # Prepare model data (exclude Mondays and zero sales)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
-        (merged['Bowls_Sold'] > 0) &
-        (merged['lag_1'].notna()) &
-        (merged['lag_7'].notna())
+        (merged['Bowls_Sold'] > 0)
     ].copy()
     
     # Center temperature
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run streamlined OLS regression with autoregressive features
+    # Run simplified payday-focused OLS regression
     X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 
-                  'is_payday_weekend', 'is_friday_base', 'is_pre_holiday', 'is_post_holiday',
-                  'is_valentines_period', 'is_lunar_new_year', 'is_pre_holiday_friday',
-                  'lag_1', 'lag_7']]
+                  'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -193,14 +191,9 @@ try:
             (ols_model.params['is_mixed_precip'] * recent_df['is_mixed_precip']) +
             (ols_model.params['is_federal_payday'] * recent_df['is_federal_payday']) +
             (ols_model.params['is_payday_weekend'] * recent_df['is_payday_weekend']) +
-            (ols_model.params['is_friday_base'] * recent_df['is_friday_base']) +
-            (ols_model.params['is_pre_holiday'] * recent_df['is_pre_holiday']) +
-            (ols_model.params['is_post_holiday'] * recent_df['is_post_holiday']) +
-            (ols_model.params['is_valentines_period'] * recent_df['is_valentines_period']) +
-            (ols_model.params['is_lunar_new_year'] * recent_df['is_lunar_new_year']) +
-            (ols_model.params['is_pre_holiday_friday'] * recent_df['is_pre_holiday_friday']) +
-            (ols_model.params['lag_1'] * recent_df['lag_1']) +
-            (ols_model.params['lag_7'] * recent_df['lag_7'])
+            (ols_model.params['is_weekly_friday'] * recent_df['is_weekly_friday']) +
+            (ols_model.params['is_semi_monthly'] * recent_df['is_semi_monthly']) +
+            (ols_model.params['is_semi_monthly_weekend'] * recent_df['is_semi_monthly_weekend'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -265,16 +258,11 @@ try:
         'Temp_Centered': 'Temperature (centered)',
         'is_weekend': 'Weekend (Sat/Sun only)',
         'is_mixed_precip': 'Mixed Precipitation',
-        'is_federal_payday': 'Federal Payday Friday (bi-weekly)',
-        'is_payday_weekend': 'Payday Weekend (Sat/Sun after payday)',
-        'is_friday_base': 'Friday (NSA Base Traffic)',
-        'is_pre_holiday': 'Pre-Holiday (1-2 days before)',
-        'is_post_holiday': 'Post-Holiday (1-2 days after)',
-        'is_valentines_period': "Valentine's Period (Feb 13-15)",
-        'is_lunar_new_year': 'Lunar New Year (3-day window)',
-        'is_pre_holiday_friday': 'Pre-Holiday × Friday (interaction)',
-        'lag_1': 'Lag 1 (Previous Day Sales)',
-        'lag_7': 'Lag 7 (7 Days Ago Sales)'
+        'is_federal_payday': 'Federal Payday Friday (bi-weekly, NSA)',
+        'is_payday_weekend': 'Payday Weekend (Sat/Sun after federal payday)',
+        'is_weekly_friday': 'Weekly Friday (General Payday)',
+        'is_semi_monthly': 'Semi-Monthly Payday (15th & Last Day)',
+        'is_semi_monthly_weekend': 'Semi-Monthly × Weekend (interaction)'
     }
     
     for var in params.index:
@@ -349,7 +337,7 @@ try:
                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     st.plotly_chart(fig, use_container_width=True)
     
-    st.caption("📊 Baseline relationships shown. Full autoregressive model includes 13 features: Temp, Weekend(Sat/Sun), Mixed Precip, Fed Payday, Payday Weekend, Friday Base, Pre/Post-Holiday, Valentine's, Lunar NY, Pre-Holiday×Friday, lag_1 (previous day), and lag_7 (7 days ago).")
+    st.caption("📊 Baseline relationships shown. Simplified payday-focused model includes 8 features: Temp, Weekend(Sat/Sun), Mixed Precip, Federal Payday (bi-weekly), Payday Weekend, Weekly Friday, Semi-Monthly (15th/Last), and Semi-Monthly×Weekend interaction.")
 
 except Exception as e:
     st.error(f"Model Diagnostics Error: {e}")
