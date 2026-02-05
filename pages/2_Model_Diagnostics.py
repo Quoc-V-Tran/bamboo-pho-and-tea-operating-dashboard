@@ -87,13 +87,8 @@ def load_all_data():
     daily_pho = pho_items.groupby('Date').agg({'Qty': 'sum'}).reset_index()
     daily_pho.columns = ['Date', 'Bowls_Sold']
     
-    # Calculate Total Orders (transaction count) per day for ALL items
-    daily_orders = df.groupby('Date')['Transaction ID'].nunique().reset_index()
-    daily_orders.columns = ['Date', 'Total_Orders']
-    
     # Merge with weather
     merged = pd.merge(daily_pho, weather, on='Date', how='left')
-    merged = pd.merge(merged, daily_orders, on='Date', how='left').fillna(0)
     merged['Day_of_Week'] = pd.to_datetime(merged['Date']).dt.day_name()
     merged['Precip_Type'] = merged['Precip_Type'].fillna('Clear')
     
@@ -111,6 +106,21 @@ try:
     merged['is_clear'] = (merged['Precip_Type'].isin(['None', 'Clear'])).astype(int)
     merged['is_rain'] = (merged['Precip_Type'].isin(['Rain', 'Mixed'])).astype(int)
     merged['is_snow'] = (merged['Precip_Type'].isin(['Snow', 'Flurries', 'Heavy Snow'])).astype(int)
+    
+    # Month dummy variables (January is baseline/reference)
+    merged['Date_dt'] = pd.to_datetime(merged['Date'])
+    merged['month'] = merged['Date_dt'].dt.month
+    merged['is_feb'] = (merged['month'] == 2).astype(int)
+    merged['is_mar'] = (merged['month'] == 3).astype(int)
+    merged['is_apr'] = (merged['month'] == 4).astype(int)
+    merged['is_may'] = (merged['month'] == 5).astype(int)
+    merged['is_jun'] = (merged['month'] == 6).astype(int)
+    merged['is_jul'] = (merged['month'] == 7).astype(int)
+    merged['is_aug'] = (merged['month'] == 8).astype(int)
+    merged['is_sep'] = (merged['month'] == 9).astype(int)
+    merged['is_oct'] = (merged['month'] == 10).astype(int)
+    merged['is_nov'] = (merged['month'] == 11).astype(int)
+    merged['is_dec'] = (merged['month'] == 12).astype(int)
     
     # Naval Base Traffic Effects
     merged['Date_dt'] = pd.to_datetime(merged['Date'])
@@ -242,102 +252,23 @@ try:
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # --- MODEL A: BOWL COUNT ---
+    # --- BUILD MODEL WITH PAYDAY + SCHOOL HOLIDAY + MONTH + YEAR CONTROLS ---
     X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                  'is_2024', 'is_2025', 'is_2026_friday', 'is_school_holiday']]
-    y_bowls = model_df['Bowls_Sold']
+                  'is_2024', 'is_2025', 'is_2026_friday', 'is_school_holiday',
+                  'is_feb', 'is_mar', 'is_apr', 'is_may', 'is_jun', 'is_jul', 'is_aug', 'is_sep', 'is_oct', 'is_nov', 'is_dec']]
+    y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
-    ols_model_bowls = sm.OLS(y_bowls, X).fit()
+    ols_model = sm.OLS(y, X).fit()
     
-    # Calculate MAE and predictions for Model A
-    mae_bowls = (y_bowls - ols_model_bowls.predict(X)).abs().mean()
-    model_df['Predicted_Bowls'] = ols_model_bowls.predict(X)
-    model_df['Error_Bowls'] = model_df['Bowls_Sold'] - model_df['Predicted_Bowls']
-    model_df['Error_Pct_Bowls'] = (model_df['Error_Bowls'] / model_df['Bowls_Sold'] * 100).abs()
-    mape_bowls = model_df['Error_Pct_Bowls'].mean()
+    # Calculate MAE and predictions
+    mae = (y - ols_model.predict(X)).abs().mean()
+    model_df['Predicted'] = ols_model.predict(X)
+    model_df['Error'] = model_df['Bowls_Sold'] - model_df['Predicted']
+    model_df['Error_Pct'] = (model_df['Error'] / model_df['Bowls_Sold'] * 100).abs()
     
-    # --- MODEL B: ORDER COUNT ---
-    y_orders = model_df['Total_Orders']
-    ols_model_orders = sm.OLS(y_orders, X).fit()
-    
-    # Calculate MAE and predictions for Model B
-    mae_orders = (y_orders - ols_model_orders.predict(X)).abs().mean()
-    model_df['Predicted_Orders'] = ols_model_orders.predict(X)
-    model_df['Error_Orders'] = model_df['Total_Orders'] - model_df['Predicted_Orders']
-    model_df['Error_Pct_Orders'] = (model_df['Error_Orders'] / model_df['Total_Orders'] * 100).abs()
-    mape_orders = model_df['Error_Pct_Orders'].mean()
-    
-    # Use Model A for display (backwards compatibility)
-    ols_model = ols_model_bowls
-    mae = mae_bowls
-    model_df['Predicted'] = model_df['Predicted_Bowls']
-    model_df['Error'] = model_df['Error_Bowls']
-    model_df['Error_Pct'] = model_df['Error_Pct_Bowls']
-    
-    # --- MODEL COMPARISON SECTION ---
-    st.header("🔬 Model Comparison: Bowl Count vs Order Count")
-    st.markdown("""
-    **Research Question:** Does transaction count (Total Orders) show more stable relationships 
-    with our Navy Base and economic variables than bowl count?
-    
-    Both models use identical features but predict different outcomes:
-    - **Model A**: Total Pho bowls sold (affected by party size)
-    - **Model B**: Total transactions/orders (pure customer visit count)
-    """)
-    
-    comp_col1, comp_col2, comp_col3 = st.columns(3)
-    
-    with comp_col1:
-        st.markdown("**📊 Model Fit**")
-        r2_comp = pd.DataFrame({
-            'Metric': ['R²', 'Adj. R²'],
-            'Bowl Count': [f"{ols_model_bowls.rsquared:.4f}", f"{ols_model_bowls.rsquared_adj:.4f}"],
-            'Order Count': [f"{ols_model_orders.rsquared:.4f}", f"{ols_model_orders.rsquared_adj:.4f}"]
-        })
-        st.dataframe(r2_comp, hide_index=True, use_container_width=True)
-    
-    with comp_col2:
-        st.markdown("**📉 Prediction Error**")
-        error_comp = pd.DataFrame({
-            'Metric': ['MAE', 'MAPE'],
-            'Bowl Count': [f"{mae_bowls:.2f} bowls", f"{mape_bowls:.2f}%"],
-            'Order Count': [f"{mae_orders:.2f} orders", f"{mape_orders:.2f}%"]
-        })
-        st.dataframe(error_comp, hide_index=True, use_container_width=True)
-    
-    with comp_col3:
-        st.markdown("**🏆 Winner**")
-        if ols_model_orders.rsquared > ols_model_bowls.rsquared:
-            st.success("Order Count")
-            diff = ((ols_model_orders.rsquared - ols_model_bowls.rsquared) / ols_model_bowls.rsquared * 100)
-            st.caption(f"+{diff:.1f}% R² improvement")
-        else:
-            st.success("Bowl Count")
-            diff = ((ols_model_bowls.rsquared - ols_model_orders.rsquared) / ols_model_orders.rsquared * 100)
-            st.caption(f"+{diff:.1f}% R² improvement")
-    
-    # Key insights
-    st.markdown("**💡 Key Insights:**")
-    if ols_model_orders.rsquared > ols_model_bowls.rsquared:
-        st.info("""
-        ✅ **Order Count shows stronger predictive power**, suggesting that:
-        - Customer visit patterns are more predictable than bowl quantities
-        - Navy Base paydays and school holidays primarily drive **foot traffic**, not party size
-        - Transaction count is less noisy (not affected by large family orders)
-        """)
-    else:
-        st.info("""
-        ✅ **Bowl Count shows stronger predictive power**, suggesting that:
-        - Quantity per order varies systematically with our features
-        - Paydays and holidays affect both visit frequency AND party size
-        - Families order more bowls during favorable conditions
-        """)
-    
-    st.divider()
-    
-    # --- MODEL PERFORMANCE SUMMARY (Bowl Count Details) ---
-    st.subheader("📊 Model A Performance: Bowl Count (Detailed View)")
+    # --- MODEL PERFORMANCE SUMMARY ---
+    st.subheader("📊 Model Performance Summary")
     
     stat_col1, stat_col2, stat_col3 = st.columns(3)
     
@@ -465,7 +396,18 @@ try:
             (ols_model.params['is_2024'] * recent_df['is_2024']) +
             (ols_model.params['is_2025'] * recent_df['is_2025']) +
             (ols_model.params['is_2026_friday'] * recent_df['is_2026_friday']) +
-            (ols_model.params['is_school_holiday'] * recent_df['is_school_holiday'])
+            (ols_model.params['is_school_holiday'] * recent_df['is_school_holiday']) +
+            (ols_model.params['is_feb'] * recent_df['is_feb']) +
+            (ols_model.params['is_mar'] * recent_df['is_mar']) +
+            (ols_model.params['is_apr'] * recent_df['is_apr']) +
+            (ols_model.params['is_may'] * recent_df['is_may']) +
+            (ols_model.params['is_jun'] * recent_df['is_jun']) +
+            (ols_model.params['is_jul'] * recent_df['is_jul']) +
+            (ols_model.params['is_aug'] * recent_df['is_aug']) +
+            (ols_model.params['is_sep'] * recent_df['is_sep']) +
+            (ols_model.params['is_oct'] * recent_df['is_oct']) +
+            (ols_model.params['is_nov'] * recent_df['is_nov']) +
+            (ols_model.params['is_dec'] * recent_df['is_dec'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -526,7 +468,7 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (Baseline: 2026, Tue-Thu, Clear, {mean_temp:.1f}°F, Regular school day)',
+        'const': f'Intercept (Baseline: 2026, January, Tue-Thu, Clear, {mean_temp:.1f}°F, Regular school day)',
         'Temp_Centered': 'Temperature (centered)',
         'is_weekend': 'Weekend (Sat/Sun only)',
         'is_rain': 'Rain/Mixed (vs Clear)',
@@ -539,7 +481,18 @@ try:
         'is_2024': 'Year 2024 (vs 2026 baseline)',
         'is_2025': 'Year 2025 (vs 2026 baseline)',
         'is_2026_friday': '2026 × Friday (Navy base effect strengthening)',
-        'is_school_holiday': 'School Holiday / Break (families have time off)'
+        'is_school_holiday': 'School Holiday / Break (families have time off)',
+        'is_feb': 'February (vs January baseline)',
+        'is_mar': 'March (vs January baseline)',
+        'is_apr': 'April (vs January baseline)',
+        'is_may': 'May (vs January baseline)',
+        'is_jun': 'June (vs January baseline)',
+        'is_jul': 'July (vs January baseline)',
+        'is_aug': 'August (vs January baseline)',
+        'is_sep': 'September (vs January baseline)',
+        'is_oct': 'October (vs January baseline)',
+        'is_nov': 'November (vs January baseline)',
+        'is_dec': 'December (vs January baseline)'
     }
     
     for var in params.index:
