@@ -222,8 +222,8 @@ try:
         # Build temporary model with this kink
         X_temp = model_df[[f'temp_cold_{kink}', f'temp_hot_{kink}', 
                           'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
-                          'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                          'is_2024', 'is_2025', 'is_2026_friday', 'season_impact']]
+                          'is_payday_weekend', 'is_weekly_friday',
+                          'is_2024', 'is_2025', 'season_impact']]
         X_temp = sm.add_constant(X_temp)
         y_temp = model_df['Bowls_Sold']
         
@@ -237,12 +237,12 @@ try:
     model_df['temp_cold'] = model_df['Temp_High'].apply(lambda t: min(t, best_kink))
     model_df['temp_hot'] = model_df['Temp_High'].apply(lambda t: max(0, t - best_kink))
     
-    # --- BUILD PIECEWISE TEMPERATURE MODEL ---
-    # Season_Impact: High Demand (+1) = Jan/Feb/Nov/Dec, Low Demand (-1) = Apr/Jun, Neutral (0) = others
+    # --- BUILD SIMPLIFIED PIECEWISE TEMPERATURE MODEL ---
+    # Season_Impact: High (+1) = Jan/Feb/Nov/Dec, Low (-1) = Apr-Aug, Neutral (0) = Mar/Sep/Oct
     # Temperature: Piecewise at optimal kink point
     X = model_df[['temp_cold', 'temp_hot', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
-                  'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                  'is_2024', 'is_2025', 'is_2026_friday', 'season_impact']]
+                  'is_payday_weekend', 'is_weekly_friday',
+                  'is_2024', 'is_2025', 'season_impact']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -279,13 +279,13 @@ try:
         st.metric("❄️ Snow", f"{ols_model.params['is_snow']:+.1f}")
     
     with stat_col3:
-        st.markdown("**Payday Effects**")
+        st.markdown("**Key Effects**")
         st.metric("📆 Fri", f"+{ols_model.params['is_weekly_friday']:.1f}",
                  help="General Friday payday")
-        st.metric("💰 15th/Last", f"+{ols_model.params['is_semi_monthly']:.1f}",
-                 help="Semi-monthly paydays")
-        st.metric("💰×📅", f"+{ols_model.params['is_semi_monthly_weekend']:.1f}",
-                 help="Semi-monthly × Weekend")
+        st.metric("🌦️ Season", f"{ols_model.params['season_impact']:+.1f}",
+                 help="Winter peak vs warm slump")
+        st.metric("🏛️ Fed Pay", f"+{ols_model.params['is_federal_payday']:.1f}",
+                 help="NSA bi-weekly payday")
     
     st.divider()
     
@@ -381,11 +381,8 @@ try:
             (ols_model.params['is_federal_payday'] * recent_df['is_federal_payday']) +
             (ols_model.params['is_payday_weekend'] * recent_df['is_payday_weekend']) +
             (ols_model.params['is_weekly_friday'] * recent_df['is_weekly_friday']) +
-            (ols_model.params['is_semi_monthly'] * recent_df['is_semi_monthly']) +
-            (ols_model.params['is_semi_monthly_weekend'] * recent_df['is_semi_monthly_weekend']) +
             (ols_model.params['is_2024'] * recent_df['is_2024']) +
             (ols_model.params['is_2025'] * recent_df['is_2025']) +
-            (ols_model.params['is_2026_friday'] * recent_df['is_2026_friday']) +
             (ols_model.params['season_impact'] * recent_df['season_impact'])
         )
         
@@ -456,11 +453,8 @@ try:
         'is_federal_payday': 'Federal Payday Friday (bi-weekly, NSA)',
         'is_payday_weekend': 'Payday Weekend (Sat/Sun after federal payday)',
         'is_weekly_friday': 'Weekly Friday (General Payday)',
-        'is_semi_monthly': 'Semi-Monthly Payday (15th & Last Day)',
-        'is_semi_monthly_weekend': 'Semi-Monthly × Weekend (interaction)',
         'is_2024': 'Year 2024 (vs 2026 baseline)',
         'is_2025': 'Year 2025 (vs 2026 baseline)',
-        'is_2026_friday': '2026 × Friday (Navy base effect strengthening)',
         'season_impact': 'Season Impact (+1: Jan/Feb/Nov/Dec, -1: Apr-Aug, 0: Mar/Sep/Oct)'
     }
     

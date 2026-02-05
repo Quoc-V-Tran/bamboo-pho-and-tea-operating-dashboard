@@ -227,8 +227,8 @@ try:
         # Build temporary model with this kink
         X_temp = model_df[[f'temp_cold_{kink}', f'temp_hot_{kink}', 
                           'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
-                          'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                          'is_2024', 'is_2025', 'is_2026_friday', 'season_impact']]
+                          'is_payday_weekend', 'is_weekly_friday',
+                          'is_2024', 'is_2025', 'season_impact']]
         X_temp = sm.add_constant(X_temp)
         y_temp = model_df['Bowls_Sold']
         
@@ -251,16 +251,15 @@ try:
     model_df['temp_cold'] = model_df['Temp_High'].apply(lambda t: min(t, best_kink))
     model_df['temp_hot'] = model_df['Temp_High'].apply(lambda t: max(0, t - best_kink))
 
-    # --- BUILD PIECEWISE TEMPERATURE MODEL ---
+    # --- BUILD SIMPLIFIED PIECEWISE TEMPERATURE MODEL ---
     # Bowls_Sold ~ Temp_Cold + Temp_Hot + Weekend + Rain + Snow + Federal_Payday + Payday_Weekend + 
-    #              Weekly_Friday + Semi_Monthly + Semi_Monthly×Weekend + Year_2024 + Year_2025 + 
-    #              2026×Friday + Season_Impact
+    #              Weekly_Friday + Year_2024 + Year_2025 + Season_Impact
     # Note: is_clear is baseline for precipitation, 2026 is baseline for year
-    # Season_Impact: High Demand (+1) = Jan/Feb/Nov/Dec, Low Demand (-1) = Apr/Jun, Neutral (0) = others
+    # Season_Impact: High (+1) = Jan/Feb/Nov/Dec, Low (-1) = Apr-Aug, Neutral (0) = Mar/Sep/Oct
     # Temperature: Piecewise at optimal kink point
     X = model_df[['temp_cold', 'temp_hot', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
-                  'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                  'is_2024', 'is_2025', 'is_2026_friday', 'season_impact']]
+                  'is_payday_weekend', 'is_weekly_friday',
+                  'is_2024', 'is_2025', 'season_impact']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -300,7 +299,6 @@ try:
         col_c, col_d = st.columns(2)
         with col_c:
             tomorrow_is_weekly_friday = st.checkbox("Friday (General Payday)", value=False)
-            tomorrow_is_semi_monthly = st.checkbox("Semi-Monthly (15th or Last Day)", value=False)
         with col_d:
             tomorrow_is_fed_payday = st.checkbox("Federal Payday Friday", value=False, help="Bi-weekly NSA")
             tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after)", value=False)
@@ -322,11 +320,7 @@ try:
         tomorrow_temp_cold = min(tomorrow_temp, optimal_kink)
         tomorrow_temp_hot = max(0, tomorrow_temp - optimal_kink)
         
-        # Interactions
-        tomorrow_semi_wknd = (1 if tomorrow_is_semi_monthly else 0) * (1 if tomorrow_is_weekend else 0)
         # Tomorrow is assumed to be 2026 (is_2024=0, is_2025=0)
-        tomorrow_2026_friday = 1 if tomorrow_is_weekly_friday else 0
-        
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['temp_cold'] * tomorrow_temp_cold) + 
                         (ols_model.params['temp_hot'] * tomorrow_temp_hot) + 
@@ -336,16 +330,13 @@ try:
                         (ols_model.params['is_federal_payday'] * (1 if tomorrow_is_fed_payday else 0)) +
                         (ols_model.params['is_payday_weekend'] * (1 if tomorrow_is_payday_wknd else 0)) +
                         (ols_model.params['is_weekly_friday'] * (1 if tomorrow_is_weekly_friday else 0)) +
-                        (ols_model.params['is_semi_monthly'] * (1 if tomorrow_is_semi_monthly else 0)) +
-                        (ols_model.params['is_semi_monthly_weekend'] * tomorrow_semi_wknd) +
                         (ols_model.params['is_2024'] * 0) +  # Tomorrow is 2026, not 2024
                         (ols_model.params['is_2025'] * 0) +  # Tomorrow is 2026, not 2025
-                        (ols_model.params['is_2026_friday'] * tomorrow_2026_friday) +
                         (ols_model.params['season_impact'] * tomorrow_season_impact))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Piecewise temperature model (14 features, Kink: {optimal_kink}°F)")
+                 help=f"Simplified piecewise model (11 features, Kink: {optimal_kink}°F)")
         
         # --- CAPACITY CONSTRAINT ANALYSIS ---
         MAX_DINE_IN_CAPACITY = 80  # Based on 10 tables, ~3 turns/day, 2.5 bowls/table avg
