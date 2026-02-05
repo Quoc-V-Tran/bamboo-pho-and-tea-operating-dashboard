@@ -57,8 +57,8 @@ def load_all_data():
     # Combine sales data
     df = pd.concat([df_2024, df_2025, df_jan_2026, df_feb_2026], ignore_index=True)
     
-    # Load 2024 weather data
-    weather_2024 = pd.read_csv('camp_hill_2024_weather.csv')
+    # Load 2024 weather data (preprocessed)
+    weather_2024 = pd.read_csv('camp_hill_2024_weather_processed.csv')
     weather_2024['Date'] = pd.to_datetime(weather_2024['Date']).dt.date
     
     # Load 2025 weather data
