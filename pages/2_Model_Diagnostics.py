@@ -170,6 +170,15 @@ try:
     merged.loc[merged['Date_dt'].dt.day == merged['Date_dt'].dt.days_in_month, 'is_semi_monthly'] = 1
     merged['is_semi_monthly_weekend'] = (merged['is_semi_monthly'] * merged['is_weekend']).astype(int)
     
+    # Year Dummies (Capture Model Drift)
+    merged['year'] = merged['Date_dt'].dt.year
+    merged['is_2024'] = (merged['year'] == 2024).astype(int)
+    merged['is_2025'] = (merged['year'] == 2025).astype(int)
+    merged['is_2026'] = (merged['year'] == 2026).astype(int)
+    
+    # Interaction: 2026 × Friday (Test if Navy base effect strengthened in 2026)
+    merged['is_2026_friday'] = (merged['is_2026'] * merged['is_weekly_friday']).astype(int)
+    
     # Prepare model data (exclude Mondays and zero sales)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -180,10 +189,11 @@ try:
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run simplified payday-focused OLS regression
-    # Note: is_clear is the baseline (omitted) category for precipitation
+    # Run payday-focused OLS regression with year controls
+    # Note: is_clear is baseline for precipitation, 2026 is baseline for year
     X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
-                  'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend']]
+                  'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
+                  'is_2024', 'is_2025', 'is_2026_friday']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -319,7 +329,10 @@ try:
             (ols_model.params['is_payday_weekend'] * recent_df['is_payday_weekend']) +
             (ols_model.params['is_weekly_friday'] * recent_df['is_weekly_friday']) +
             (ols_model.params['is_semi_monthly'] * recent_df['is_semi_monthly']) +
-            (ols_model.params['is_semi_monthly_weekend'] * recent_df['is_semi_monthly_weekend'])
+            (ols_model.params['is_semi_monthly_weekend'] * recent_df['is_semi_monthly_weekend']) +
+            (ols_model.params['is_2024'] * recent_df['is_2024']) +
+            (ols_model.params['is_2025'] * recent_df['is_2025']) +
+            (ols_model.params['is_2026_friday'] * recent_df['is_2026_friday'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -380,7 +393,7 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (Baseline: Tue-Thu, Clear Weather, {mean_temp:.1f}°F)',
+        'const': f'Intercept (Baseline: 2026, Tue-Thu, Clear, {mean_temp:.1f}°F)',
         'Temp_Centered': 'Temperature (centered)',
         'is_weekend': 'Weekend (Sat/Sun only)',
         'is_rain': 'Rain/Mixed (vs Clear)',
@@ -389,7 +402,10 @@ try:
         'is_payday_weekend': 'Payday Weekend (Sat/Sun after federal payday)',
         'is_weekly_friday': 'Weekly Friday (General Payday)',
         'is_semi_monthly': 'Semi-Monthly Payday (15th & Last Day)',
-        'is_semi_monthly_weekend': 'Semi-Monthly × Weekend (interaction)'
+        'is_semi_monthly_weekend': 'Semi-Monthly × Weekend (interaction)',
+        'is_2024': 'Year 2024 (vs 2026 baseline)',
+        'is_2025': 'Year 2025 (vs 2026 baseline)',
+        'is_2026_friday': '2026 × Friday (Navy base effect strengthening)'
     }
     
     for var in params.index:
@@ -464,7 +480,7 @@ try:
                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     st.plotly_chart(fig, use_container_width=True)
     
-    st.caption("📊 Baseline relationships shown. Simplified payday-focused model includes 9 features: Temp, Weekend(Sat/Sun), Rain (vs Clear), Snow (vs Clear), Federal Payday (bi-weekly), Payday Weekend, Weekly Friday, Semi-Monthly (15th/Last), and Semi-Monthly×Weekend interaction.")
+    st.caption("📊 Baseline relationships shown. Model with year controls includes 12 features: Temp, Weekend(Sat/Sun), Rain (vs Clear), Snow (vs Clear), Federal Payday, Payday Weekend, Weekly Friday, Semi-Monthly (15th/Last), Semi-Monthly×Weekend, Year 2024, Year 2025, and 2026×Friday (Navy base strengthening).")
 
 except Exception as e:
     st.error(f"Model Diagnostics Error: {e}")

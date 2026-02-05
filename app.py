@@ -145,6 +145,15 @@ try:
     # Interaction: Semi-monthly payday × Weekend (15th/month-end on Fri-Sun = massive weekend)
     merged['is_semi_monthly_weekend'] = (merged['is_semi_monthly'] * merged['is_weekend']).astype(int)
     
+    # --- YEAR DUMMIES (Capture Model Drift) ---
+    merged['year'] = merged['Date_dt'].dt.year
+    merged['is_2024'] = (merged['year'] == 2024).astype(int)
+    merged['is_2025'] = (merged['year'] == 2025).astype(int)
+    merged['is_2026'] = (merged['year'] == 2026).astype(int)
+    
+    # Interaction: 2026 × Friday (Test if Navy base effect strengthened in 2026)
+    merged['is_2026_friday'] = (merged['is_2026'] * merged['is_weekly_friday']).astype(int)
+    
     # Filter for active days only (Exclude Mondays and zero sales)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -164,12 +173,13 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD SIMPLIFIED PAYDAY-FOCUSED MODEL ---
+    # --- BUILD PAYDAY-FOCUSED MODEL WITH YEAR CONTROLS ---
     # Bowls_Sold ~ Temp + Weekend(Sat/Sun) + Rain + Snow + Federal_Payday + Payday_Weekend + 
-    #              Weekly_Friday + Semi_Monthly + Semi_Monthly×Weekend
-    # Note: is_clear is the baseline (omitted) category for precipitation
+    #              Weekly_Friday + Semi_Monthly + Semi_Monthly×Weekend + Year_2024 + Year_2025 + 2026×Friday
+    # Note: is_clear is baseline for precipitation, 2026 is baseline for year
     X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
-                  'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend']]
+                  'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
+                  'is_2024', 'is_2025', 'is_2026_friday']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -211,8 +221,10 @@ try:
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
         
-        # Interaction: Semi-monthly payday × Weekend
+        # Interactions
         tomorrow_semi_wknd = (1 if tomorrow_is_semi_monthly else 0) * (1 if tomorrow_is_weekend else 0)
+        # Tomorrow is assumed to be 2026 (is_2024=0, is_2025=0)
+        tomorrow_2026_friday = 1 if tomorrow_is_weekly_friday else 0
         
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
@@ -223,11 +235,14 @@ try:
                         (ols_model.params['is_payday_weekend'] * (1 if tomorrow_is_payday_wknd else 0)) +
                         (ols_model.params['is_weekly_friday'] * (1 if tomorrow_is_weekly_friday else 0)) +
                         (ols_model.params['is_semi_monthly'] * (1 if tomorrow_is_semi_monthly else 0)) +
-                        (ols_model.params['is_semi_monthly_weekend'] * tomorrow_semi_wknd))
+                        (ols_model.params['is_semi_monthly_weekend'] * tomorrow_semi_wknd) +
+                        (ols_model.params['is_2024'] * 0) +  # Tomorrow is 2026, not 2024
+                        (ols_model.params['is_2025'] * 0) +  # Tomorrow is 2026, not 2025
+                        (ols_model.params['is_2026_friday'] * tomorrow_2026_friday))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Payday-focused model with 9 features (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Model with year controls - predicting for 2026 (Mean temp: {mean_temp:.1f}°F)")
         
         st.info("💡 For detailed model performance metrics and diagnostics, see the **Model Diagnostics** page in the sidebar.")
 
