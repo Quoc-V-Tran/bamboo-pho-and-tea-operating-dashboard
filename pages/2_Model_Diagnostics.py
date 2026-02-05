@@ -148,6 +148,21 @@ try:
     
     merged['is_pre_holiday_friday'] = (merged['is_pre_holiday'] * merged['is_friday_base']).astype(int)
     
+    # Competitor Closure Effects (Overflow Demand)
+    merged['little_saigon_closed'] = (merged['Day_of_Week'] == 'Tuesday').astype(int)
+    merged['pho_kims_closed'] = (merged['Day_of_Week'] == 'Sunday').astype(int)
+    merged['pho_la_vie_closed'] = (merged['Day_of_Week'] == 'Monday').astype(int)
+    merged['la_squared_closed'] = (merged['Day_of_Week'] == 'Sunday').astype(int)
+    
+    merged['competitor_overflow_index'] = (
+        merged['little_saigon_closed'] + 
+        merged['pho_kims_closed'] + 
+        merged['pho_la_vie_closed'] + 
+        merged['la_squared_closed']
+    )
+    
+    merged['overflow_weekend'] = (merged['competitor_overflow_index'] * merged['is_weekend']).astype(int)
+    
     # Prepare model data
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -158,10 +173,11 @@ try:
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run comprehensive OLS regression
+    # Run comprehensive OLS regression with competitor effects
     X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 
                   'is_payday_weekend', 'is_friday_base', 'is_pre_holiday', 'is_post_holiday',
-                  'is_valentines_period', 'is_lunar_new_year', 'is_pre_holiday_friday']]
+                  'is_valentines_period', 'is_lunar_new_year', 'is_pre_holiday_friday',
+                  'competitor_overflow_index', 'overflow_weekend']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -187,7 +203,9 @@ try:
             (ols_model.params['is_post_holiday'] * recent_df['is_post_holiday']) +
             (ols_model.params['is_valentines_period'] * recent_df['is_valentines_period']) +
             (ols_model.params['is_lunar_new_year'] * recent_df['is_lunar_new_year']) +
-            (ols_model.params['is_pre_holiday_friday'] * recent_df['is_pre_holiday_friday'])
+            (ols_model.params['is_pre_holiday_friday'] * recent_df['is_pre_holiday_friday']) +
+            (ols_model.params['competitor_overflow_index'] * recent_df['competitor_overflow_index']) +
+            (ols_model.params['overflow_weekend'] * recent_df['overflow_weekend'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -259,7 +277,9 @@ try:
         'is_post_holiday': 'Post-Holiday (1-2 days after)',
         'is_valentines_period': "Valentine's Period (Feb 13-15)",
         'is_lunar_new_year': 'Lunar New Year (3-day window)',
-        'is_pre_holiday_friday': 'Pre-Holiday × Friday (interaction)'
+        'is_pre_holiday_friday': 'Pre-Holiday × Friday (interaction)',
+        'competitor_overflow_index': 'Competitor Overflow Index (per competitor closed)',
+        'overflow_weekend': 'Overflow × Weekend (interaction)'
     }
     
     for var in params.index:
@@ -332,7 +352,7 @@ try:
                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     st.plotly_chart(fig, use_container_width=True)
     
-    st.caption("📊 Baseline relationships shown. Full model includes 11 features: Temp, Weekend(Sat/Sun), Mixed Precip, Fed Payday, Payday Weekend, Friday Base, Pre/Post-Holiday, Valentine's, Lunar NY, and Pre-Holiday×Friday interaction.")
+    st.caption("📊 Baseline relationships shown. Full model includes 13 features: Temp, Weekend(Sat/Sun), Mixed Precip, Fed Payday, Payday Weekend, Friday Base, Pre/Post-Holiday, Valentine's, Lunar NY, Pre-Holiday×Friday, Competitor Overflow Index, and Overflow×Weekend interaction.")
 
 except Exception as e:
     st.error(f"Model Diagnostics Error: {e}")

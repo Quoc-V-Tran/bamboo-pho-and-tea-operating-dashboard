@@ -170,6 +170,24 @@ try:
     # Interaction: Pre-Holiday × Friday ('I'm not cooking before the long weekend')
     merged['is_pre_holiday_friday'] = (merged['is_pre_holiday'] * merged['is_friday_base']).astype(int)
     
+    # --- COMPETITOR CLOSURE EFFECTS (Overflow Demand) ---
+    # Based on field research of Greater Harrisburg competitor schedules
+    merged['little_saigon_closed'] = (merged['Day_of_Week'] == 'Tuesday').astype(int)
+    merged['pho_kims_closed'] = (merged['Day_of_Week'] == 'Sunday').astype(int)
+    merged['pho_la_vie_closed'] = (merged['Day_of_Week'] == 'Monday').astype(int)
+    merged['la_squared_closed'] = (merged['Day_of_Week'] == 'Sunday').astype(int)
+    
+    # Aggregate Overflow Index: How many competitors are closed today?
+    merged['competitor_overflow_index'] = (
+        merged['little_saigon_closed'] + 
+        merged['pho_kims_closed'] + 
+        merged['pho_la_vie_closed'] + 
+        merged['la_squared_closed']
+    )
+    
+    # Interaction: Overflow × Weekend (Sundays have 2 major competitors closed)
+    merged['overflow_weekend'] = (merged['competitor_overflow_index'] * merged['is_weekend']).astype(int)
+    
     # Filter for active days only (Exclude Mondays AND any days with zero sales)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -189,12 +207,14 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD COMPREHENSIVE MODEL WITH BASE + HOLIDAY EFFECTS ---
+    # --- BUILD COMPREHENSIVE MODEL WITH BASE + HOLIDAY + COMPETITOR EFFECTS ---
     # Bowls_Sold ~ Temp + Weekend(Sat/Sun) + Mixed + Federal_Payday + Payday_Weekend + 
-    #              Friday_Base + Pre_Holiday + Post_Holiday + Valentines + Lunar_NY + Pre_Holiday×Friday
+    #              Friday_Base + Pre_Holiday + Post_Holiday + Valentines + Lunar_NY + 
+    #              Pre_Holiday×Friday + Competitor_Overflow + Overflow×Weekend
     X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 
                   'is_payday_weekend', 'is_friday_base', 'is_pre_holiday', 'is_post_holiday',
-                  'is_valentines_period', 'is_lunar_new_year', 'is_pre_holiday_friday']]
+                  'is_valentines_period', 'is_lunar_new_year', 'is_pre_holiday_friday',
+                  'competitor_overflow_index', 'overflow_weekend']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -232,11 +252,29 @@ try:
         
         tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after fed payday)", value=False)
         
+        st.markdown("**🏪 Competitor Closures (Overflow Demand)**")
+        col_e, col_f = st.columns(2)
+        with col_e:
+            tomorrow_little_saigon = st.checkbox("Little Saigon closed (Tue)", value=False)
+            tomorrow_pho_kims = st.checkbox("Pho Kim's closed (Sun)", value=False)
+        with col_f:
+            tomorrow_pho_la_vie = st.checkbox("Pho La Vie closed (Mon)", value=False)
+            tomorrow_la_squared = st.checkbox("The LA Squared closed (Sun)", value=False)
+        
+        # Calculate competitor overflow index
+        tomorrow_overflow = (
+            (1 if tomorrow_little_saigon else 0) +
+            (1 if tomorrow_pho_kims else 0) +
+            (1 if tomorrow_pho_la_vie else 0) +
+            (1 if tomorrow_la_squared else 0)
+        )
+        
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
         
-        # Pre-holiday × Friday interaction
+        # Interactions
         tomorrow_pre_hol_fri = (1 if tomorrow_is_pre_holiday else 0) * (1 if tomorrow_is_friday_base else 0)
+        tomorrow_overflow_wknd = tomorrow_overflow * (1 if tomorrow_is_weekend else 0)
         
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
@@ -249,37 +287,54 @@ try:
                         (ols_model.params['is_post_holiday'] * (1 if tomorrow_is_post_holiday else 0)) +
                         (ols_model.params['is_valentines_period'] * (1 if tomorrow_is_valentines else 0)) +
                         (ols_model.params['is_lunar_new_year'] * (1 if tomorrow_is_lunar_ny else 0)) +
-                        (ols_model.params['is_pre_holiday_friday'] * tomorrow_pre_hol_fri))
+                        (ols_model.params['is_pre_holiday_friday'] * tomorrow_pre_hol_fri) +
+                        (ols_model.params['competitor_overflow_index'] * tomorrow_overflow) +
+                        (ols_model.params['overflow_weekend'] * tomorrow_overflow_wknd))
+        
+        if tomorrow_overflow > 0:
+            st.info(f"💡 {tomorrow_overflow} competitor(s) closed → Overflow demand expected!")
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Comprehensive model with 11 features (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Comprehensive model with 13 features (Mean temp: {mean_temp:.1f}°F)")
     
     with pred_col2:
         st.subheader("📊 Model Performance")
         
-        stat_col1, stat_col2, stat_col3 = st.columns(3)
+        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
         
         with stat_col1:
             avg_bowls = model_df['Bowls_Sold'].mean()
             st.metric("Avg Daily Bowls", f"{avg_bowls:.1f}")
             st.metric("Model R²", f"{ols_model.rsquared:.3f}",
-                     help="Proportion of variance explained")
+                     help="Variance explained")
             st.metric("Adj. R²", f"{ols_model.rsquared_adj:.3f}")
             avg_error_pct = model_df['Error_Pct'].mean()
             st.metric("Avg Error %", f"{avg_error_pct:.1f}%")
         
         with stat_col2:
-            st.markdown("**Core Effects**")
+            st.markdown("**Core**")
             st.metric("🌡️ Temp", f"{ols_model.params['Temp_Centered']:.2f}/°F")
             st.metric("📅 Weekend", f"+{ols_model.params['is_weekend']:.1f}")
-            st.metric("🏛️ Friday Base", f"+{ols_model.params['is_friday_base']:.1f}")
+            st.metric("🏛️ Friday", f"+{ols_model.params['is_friday_base']:.1f}")
         
         with stat_col3:
-            st.markdown("**Special Events**")
-            st.metric("🎉 Pre-Holiday", f"{ols_model.params['is_pre_holiday']:+.1f}")
-            st.metric("💝 Valentine's", f"{ols_model.params['is_valentines_period']:+.1f}")
-            st.metric("🧧 Lunar NY", f"{ols_model.params['is_lunar_new_year']:+.1f}")
+            st.markdown("**Holidays**")
+            st.metric("🎉 Pre-Hol", f"{ols_model.params['is_pre_holiday']:+.1f}")
+            st.metric("💝 V-Day", f"{ols_model.params['is_valentines_period']:+.1f}")
+            st.metric("🧧 Lunar", f"{ols_model.params['is_lunar_new_year']:+.1f}")
+        
+        with stat_col4:
+            st.markdown("**Overflow**")
+            st.metric("🏪 Index", f"+{ols_model.params['competitor_overflow_index']:.1f}",
+                     help="Per competitor closed")
+            st.metric("🏪×📅 Wknd", f"+{ols_model.params['overflow_weekend']:.1f}",
+                     help="Overflow on weekends")
+            
+            # Calculate p-value significance
+            p_overflow = ols_model.pvalues['competitor_overflow_index']
+            sig = "***" if p_overflow < 0.001 else "**" if p_overflow < 0.01 else "*" if p_overflow < 0.05 else "ns"
+            st.caption(f"Overflow p={p_overflow:.4f} {sig}")
 
     st.divider()
     
