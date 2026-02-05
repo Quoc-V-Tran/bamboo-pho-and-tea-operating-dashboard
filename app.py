@@ -216,18 +216,63 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD SIMPLIFIED ROBUST MODEL ---
-    # Bowls_Sold ~ Temp + Weekend + Rain + Snow + Federal_Payday + Payday_Weekend + 
+    # --- FIND OPTIMAL TEMPERATURE KINK POINT ---
+    # Test piecewise temperature models with different kink points
+    kink_points = [50, 55, 60, 65, 70]
+    best_r2 = 0
+    best_kink = 60  # Default
+    kink_results = []
+    
+    for kink in kink_points:
+        # Create piecewise temperature variables
+        model_df[f'temp_cold_{kink}'] = model_df['Temp_High'].apply(lambda t: min(t, kink))
+        model_df[f'temp_hot_{kink}'] = model_df['Temp_High'].apply(lambda t: max(0, t - kink))
+        
+        # Build temporary model with this kink
+        X_temp = model_df[[f'temp_cold_{kink}', f'temp_hot_{kink}', 
+                          'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
+                          'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
+                          'is_2024', 'is_2025', 'is_2026_friday', 'season_impact']]
+        X_temp = sm.add_constant(X_temp)
+        y_temp = model_df['Bowls_Sold']
+        
+        model_temp = sm.OLS(y_temp, X_temp).fit()
+        
+        kink_results.append({
+            'kink': kink,
+            'r2': model_temp.rsquared,
+            'cold_coef': model_temp.params[f'temp_cold_{kink}'],
+            'hot_coef': model_temp.params[f'temp_hot_{kink}'],
+            'cold_pval': model_temp.pvalues[f'temp_cold_{kink}'],
+            'hot_pval': model_temp.pvalues[f'temp_hot_{kink}']
+        })
+        
+        if model_temp.rsquared > best_r2:
+            best_r2 = model_temp.rsquared
+            best_kink = kink
+    
+    # Use optimal kink point
+    model_df['temp_cold'] = model_df['Temp_High'].apply(lambda t: min(t, best_kink))
+    model_df['temp_hot'] = model_df['Temp_High'].apply(lambda t: max(0, t - best_kink))
+
+    # --- BUILD PIECEWISE TEMPERATURE MODEL ---
+    # Bowls_Sold ~ Temp_Cold + Temp_Hot + Weekend + Rain + Snow + Federal_Payday + Payday_Weekend + 
     #              Weekly_Friday + Semi_Monthly + Semi_Monthly×Weekend + Year_2024 + Year_2025 + 
     #              2026×Friday + Season_Impact
     # Note: is_clear is baseline for precipitation, 2026 is baseline for year
     # Season_Impact: High Demand (+1) = Jan/Feb/Nov/Dec, Low Demand (-1) = Apr/Jun, Neutral (0) = others
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
+    # Temperature: Piecewise at optimal kink point
+    X = model_df[['temp_cold', 'temp_hot', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
                   'is_2024', 'is_2025', 'is_2026_friday', 'season_impact']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
+    
+    # Store kink point info for display
+    optimal_kink = best_kink
+    kink_cold_coef = ols_model.params['temp_cold']
+    kink_hot_coef = ols_model.params['temp_hot']
     
     # Calculate predictions and errors
     model_df['Predicted'] = ols_model.predict(X)
@@ -277,8 +322,9 @@ try:
             help="Consolidated seasonal demand pattern"
         )
         
-        # Center tomorrow's temperature
-        tomorrow_temp_centered = tomorrow_temp - mean_temp
+        # Piecewise temperature transformation
+        tomorrow_temp_cold = min(tomorrow_temp, optimal_kink)
+        tomorrow_temp_hot = max(0, tomorrow_temp - optimal_kink)
         
         # Interactions
         tomorrow_semi_wknd = (1 if tomorrow_is_semi_monthly else 0) * (1 if tomorrow_is_weekend else 0)
@@ -286,7 +332,8 @@ try:
         tomorrow_2026_friday = 1 if tomorrow_is_weekly_friday else 0
         
         tomorrow_pred = (ols_model.params['const'] + 
-                        (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
+                        (ols_model.params['temp_cold'] * tomorrow_temp_cold) + 
+                        (ols_model.params['temp_hot'] * tomorrow_temp_hot) + 
                         (ols_model.params['is_weekend'] * (1 if tomorrow_is_weekend else 0)) +
                         (ols_model.params['is_rain'] * (1 if tomorrow_is_rain else 0)) +
                         (ols_model.params['is_snow'] * (1 if tomorrow_is_snow else 0)) +
@@ -302,7 +349,7 @@ try:
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Simplified robust model (13 features, Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Piecewise temperature model (14 features, Kink: {optimal_kink}°F)")
         
         # --- CAPACITY CONSTRAINT ANALYSIS ---
         MAX_DINE_IN_CAPACITY = 80  # Based on 10 tables, ~3 turns/day, 2.5 bowls/table avg
@@ -344,6 +391,31 @@ try:
         
         st.info("💡 For detailed model performance metrics and diagnostics, see the **Model Diagnostics** page in the sidebar.")
 
+    st.divider()
+    
+    # --- TEMPERATURE KINK POINT ANALYSIS ---
+    st.subheader("🌡️ Temperature Kink Point Analysis")
+    
+    st.markdown(f"""
+    **Piecewise Temperature Model**: Tests whether temperature affects demand **non-linearly** with a threshold.
+    
+    - **Below {optimal_kink}°F**: Cold enough for pho (coefficient: {kink_cold_coef:.4f})
+    - **Above {optimal_kink}°F**: Each degree warmer reduces demand (coefficient: {kink_hot_coef:.4f})
+    """)
+    
+    # Display kink point comparison table
+    kink_df = pd.DataFrame(kink_results)
+    kink_df.columns = ['Kink (°F)', 'R²', 'Cold Coef', 'Hot Coef', 'Cold p-value', 'Hot p-value']
+    kink_df['Cold Coef'] = kink_df['Cold Coef'].apply(lambda x: f"{x:.4f}")
+    kink_df['Hot Coef'] = kink_df['Hot Coef'].apply(lambda x: f"{x:.4f}")
+    kink_df['Cold p-value'] = kink_df['Cold p-value'].apply(lambda x: f"{x:.4f}")
+    kink_df['Hot p-value'] = kink_df['Hot p-value'].apply(lambda x: f"{x:.4f}")
+    kink_df['R²'] = kink_df['R²'].apply(lambda x: f"{x:.4f}")
+    
+    st.dataframe(kink_df, hide_index=True, use_container_width=True)
+    
+    st.caption(f"✅ **Optimal Kink: {optimal_kink}°F** (highest R²)")
+    
     st.divider()
     
     # --- LINE CHART: Pho Bowls vs Daily High Temperature ---

@@ -208,13 +208,39 @@ try:
         (merged['Bowls_Sold'] > 0)
     ].copy()
     
-    # Center temperature
-    mean_temp = model_df['Temp_High'].mean()
-    model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
+    # --- FIND OPTIMAL TEMPERATURE KINK POINT ---
+    # Test piecewise temperature models with different kink points
+    kink_points = [50, 55, 60, 65, 70]
+    best_r2 = 0
+    best_kink = 60  # Default
     
-    # --- BUILD SIMPLIFIED ROBUST MODEL ---
+    for kink in kink_points:
+        # Create piecewise temperature variables
+        model_df[f'temp_cold_{kink}'] = model_df['Temp_High'].apply(lambda t: min(t, kink))
+        model_df[f'temp_hot_{kink}'] = model_df['Temp_High'].apply(lambda t: max(0, t - kink))
+        
+        # Build temporary model with this kink
+        X_temp = model_df[[f'temp_cold_{kink}', f'temp_hot_{kink}', 
+                          'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
+                          'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
+                          'is_2024', 'is_2025', 'is_2026_friday', 'season_impact']]
+        X_temp = sm.add_constant(X_temp)
+        y_temp = model_df['Bowls_Sold']
+        
+        model_temp = sm.OLS(y_temp, X_temp).fit()
+        
+        if model_temp.rsquared > best_r2:
+            best_r2 = model_temp.rsquared
+            best_kink = kink
+    
+    # Use optimal kink point
+    model_df['temp_cold'] = model_df['Temp_High'].apply(lambda t: min(t, best_kink))
+    model_df['temp_hot'] = model_df['Temp_High'].apply(lambda t: max(0, t - best_kink))
+    
+    # --- BUILD PIECEWISE TEMPERATURE MODEL ---
     # Season_Impact: High Demand (+1) = Jan/Feb/Nov/Dec, Low Demand (-1) = Apr/Jun, Neutral (0) = others
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
+    # Temperature: Piecewise at optimal kink point
+    X = model_df[['temp_cold', 'temp_hot', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
                   'is_2024', 'is_2025', 'is_2026_friday', 'season_impact']]
     y = model_df['Bowls_Sold']
@@ -344,7 +370,8 @@ try:
         # Calculate predictions for recent days
         recent_df['Predicted'] = (
             ols_model.params['const'] + 
-            (ols_model.params['Temp_Centered'] * recent_df['Temp_Centered']) +
+            (ols_model.params['temp_cold'] * recent_df['temp_cold']) +
+            (ols_model.params['temp_hot'] * recent_df['temp_hot']) +
             (ols_model.params['is_weekend'] * recent_df['is_weekend']) +
             (ols_model.params['is_rain'] * recent_df['is_rain']) +
             (ols_model.params['is_snow'] * recent_df['is_snow']) +
@@ -417,8 +444,9 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (Baseline: 2026, Neutral season, Tue-Thu, Clear, {mean_temp:.1f}°F)',
-        'Temp_Centered': 'Temperature (centered)',
+        'const': f'Intercept (Baseline: 2026, Neutral season, Tue-Thu, Clear, Temp at kink)',
+        'temp_cold': f'Temperature ≤ {best_kink}°F (below kink, should be ~0)',
+        'temp_hot': f'Temperature > {best_kink}°F (above kink, should be negative)',
         'is_weekend': 'Weekend (Sat/Sun only)',
         'is_rain': 'Rain/Mixed (vs Clear)',
         'is_snow': 'Snow/Flurries/Heavy (vs Clear)',
