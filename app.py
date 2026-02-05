@@ -66,6 +66,12 @@ def load_all_data():
     
     # Load Feb 2026 weather data
     weather_feb_2026 = pd.read_csv('feb_weather.csv')
+    # Fix column names (handle spaces)
+    weather_feb_2026.columns = weather_feb_2026.columns.str.replace(' ', '_')
+    # Clean temperature values (remove °F suffix)
+    weather_feb_2026['Temp_High'] = weather_feb_2026['Temp_High'].astype(str).str.replace('°F', '').astype(float)
+    # Clean precipitation type (extract base type)
+    weather_feb_2026['Precip_Type'] = weather_feb_2026['Precip_Type'].str.split(' ').str[0]
     weather_feb_2026['Date'] = pd.to_datetime(weather_feb_2026['Date']).dt.date
     
     # Combine weather data
