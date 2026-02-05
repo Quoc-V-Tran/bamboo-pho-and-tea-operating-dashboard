@@ -87,8 +87,13 @@ def load_all_data():
     daily_pho = pho_items.groupby('Date').agg({'Qty': 'sum'}).reset_index()
     daily_pho.columns = ['Date', 'Bowls_Sold']
     
+    # Calculate Total Orders (transaction count) per day for ALL items
+    daily_orders = df.groupby('Date')['Transaction ID'].nunique().reset_index()
+    daily_orders.columns = ['Date', 'Total_Orders']
+    
     # Merge with weather
     merged = pd.merge(daily_pho, weather, on='Date', how='left')
+    merged = pd.merge(merged, daily_orders, on='Date', how='left').fillna(0)
     merged['Day_of_Week'] = pd.to_datetime(merged['Date']).dt.day_name()
     merged['Precip_Type'] = merged['Precip_Type'].fillna('Clear')
     
@@ -237,23 +242,102 @@ try:
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run model with payday, school holiday, and year controls
-    # Note: is_clear is baseline for precipitation, 2026 is baseline for year
+    # --- MODEL A: BOWL COUNT ---
     X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
                   'is_2024', 'is_2025', 'is_2026_friday', 'is_school_holiday']]
-    y = model_df['Bowls_Sold']
+    y_bowls = model_df['Bowls_Sold']
     X = sm.add_constant(X)
-    ols_model = sm.OLS(y, X).fit()
+    ols_model_bowls = sm.OLS(y_bowls, X).fit()
     
-    # Calculate MAE and predictions
-    mae = (y - ols_model.predict(X)).abs().mean()
-    model_df['Predicted'] = ols_model.predict(X)
-    model_df['Error'] = model_df['Bowls_Sold'] - model_df['Predicted']
-    model_df['Error_Pct'] = (model_df['Error'] / model_df['Bowls_Sold'] * 100).abs()
+    # Calculate MAE and predictions for Model A
+    mae_bowls = (y_bowls - ols_model_bowls.predict(X)).abs().mean()
+    model_df['Predicted_Bowls'] = ols_model_bowls.predict(X)
+    model_df['Error_Bowls'] = model_df['Bowls_Sold'] - model_df['Predicted_Bowls']
+    model_df['Error_Pct_Bowls'] = (model_df['Error_Bowls'] / model_df['Bowls_Sold'] * 100).abs()
+    mape_bowls = model_df['Error_Pct_Bowls'].mean()
     
-    # --- MODEL PERFORMANCE SUMMARY ---
-    st.subheader("📊 Model Performance Summary")
+    # --- MODEL B: ORDER COUNT ---
+    y_orders = model_df['Total_Orders']
+    ols_model_orders = sm.OLS(y_orders, X).fit()
+    
+    # Calculate MAE and predictions for Model B
+    mae_orders = (y_orders - ols_model_orders.predict(X)).abs().mean()
+    model_df['Predicted_Orders'] = ols_model_orders.predict(X)
+    model_df['Error_Orders'] = model_df['Total_Orders'] - model_df['Predicted_Orders']
+    model_df['Error_Pct_Orders'] = (model_df['Error_Orders'] / model_df['Total_Orders'] * 100).abs()
+    mape_orders = model_df['Error_Pct_Orders'].mean()
+    
+    # Use Model A for display (backwards compatibility)
+    ols_model = ols_model_bowls
+    mae = mae_bowls
+    model_df['Predicted'] = model_df['Predicted_Bowls']
+    model_df['Error'] = model_df['Error_Bowls']
+    model_df['Error_Pct'] = model_df['Error_Pct_Bowls']
+    
+    # --- MODEL COMPARISON SECTION ---
+    st.header("🔬 Model Comparison: Bowl Count vs Order Count")
+    st.markdown("""
+    **Research Question:** Does transaction count (Total Orders) show more stable relationships 
+    with our Navy Base and economic variables than bowl count?
+    
+    Both models use identical features but predict different outcomes:
+    - **Model A**: Total Pho bowls sold (affected by party size)
+    - **Model B**: Total transactions/orders (pure customer visit count)
+    """)
+    
+    comp_col1, comp_col2, comp_col3 = st.columns(3)
+    
+    with comp_col1:
+        st.markdown("**📊 Model Fit**")
+        r2_comp = pd.DataFrame({
+            'Metric': ['R²', 'Adj. R²'],
+            'Bowl Count': [f"{ols_model_bowls.rsquared:.4f}", f"{ols_model_bowls.rsquared_adj:.4f}"],
+            'Order Count': [f"{ols_model_orders.rsquared:.4f}", f"{ols_model_orders.rsquared_adj:.4f}"]
+        })
+        st.dataframe(r2_comp, hide_index=True, use_container_width=True)
+    
+    with comp_col2:
+        st.markdown("**📉 Prediction Error**")
+        error_comp = pd.DataFrame({
+            'Metric': ['MAE', 'MAPE'],
+            'Bowl Count': [f"{mae_bowls:.2f} bowls", f"{mape_bowls:.2f}%"],
+            'Order Count': [f"{mae_orders:.2f} orders", f"{mape_orders:.2f}%"]
+        })
+        st.dataframe(error_comp, hide_index=True, use_container_width=True)
+    
+    with comp_col3:
+        st.markdown("**🏆 Winner**")
+        if ols_model_orders.rsquared > ols_model_bowls.rsquared:
+            st.success("Order Count")
+            diff = ((ols_model_orders.rsquared - ols_model_bowls.rsquared) / ols_model_bowls.rsquared * 100)
+            st.caption(f"+{diff:.1f}% R² improvement")
+        else:
+            st.success("Bowl Count")
+            diff = ((ols_model_bowls.rsquared - ols_model_orders.rsquared) / ols_model_orders.rsquared * 100)
+            st.caption(f"+{diff:.1f}% R² improvement")
+    
+    # Key insights
+    st.markdown("**💡 Key Insights:**")
+    if ols_model_orders.rsquared > ols_model_bowls.rsquared:
+        st.info("""
+        ✅ **Order Count shows stronger predictive power**, suggesting that:
+        - Customer visit patterns are more predictable than bowl quantities
+        - Navy Base paydays and school holidays primarily drive **foot traffic**, not party size
+        - Transaction count is less noisy (not affected by large family orders)
+        """)
+    else:
+        st.info("""
+        ✅ **Bowl Count shows stronger predictive power**, suggesting that:
+        - Quantity per order varies systematically with our features
+        - Paydays and holidays affect both visit frequency AND party size
+        - Families order more bowls during favorable conditions
+        """)
+    
+    st.divider()
+    
+    # --- MODEL PERFORMANCE SUMMARY (Bowl Count Details) ---
+    st.subheader("📊 Model A Performance: Bowl Count (Detailed View)")
     
     stat_col1, stat_col2, stat_col3 = st.columns(3)
     

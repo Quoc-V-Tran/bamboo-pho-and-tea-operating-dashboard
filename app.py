@@ -87,8 +87,13 @@ try:
     daily_pho = pho_only.groupby('Date')['Qty'].sum().reset_index()
     daily_pho.columns = ['Date', 'Bowls_Sold']
     
+    # Calculate Total Orders (transaction count) per day for ALL items
+    daily_orders = sales_df.groupby('Date')['Transaction ID'].nunique().reset_index()
+    daily_orders.columns = ['Date', 'Total_Orders']
+    
     weather_df['Precip_Type'] = weather_df['Precip_Type'].replace('None', 'Clear').fillna('Clear')
     merged = pd.merge(weather_df, daily_pho, on='Date', how='left').fillna(0)
+    merged = pd.merge(merged, daily_orders, on='Date', how='left').fillna(0)
     merged['Day_of_Week'] = pd.to_datetime(merged['Date']).dt.day_name()
     
     # --- FEATURE ENGINEERING ---
@@ -242,7 +247,7 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD MODEL WITH PAYDAY + SCHOOL HOLIDAY + YEAR CONTROLS ---
+    # --- MODEL A: BOWL COUNT (Current Model) ---
     # Bowls_Sold ~ Temp + Weekend + Rain + Snow + Federal_Payday + Payday_Weekend + 
     #              Weekly_Friday + Semi_Monthly + Semi_Monthly×Weekend + Year_2024 + Year_2025 + 
     #              2026×Friday + School_Holiday
@@ -251,16 +256,69 @@ try:
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
                   'is_2024', 'is_2025', 'is_2026_friday', 'is_school_holiday']]
     X = sm.add_constant(X) 
-    y = model_df['Bowls_Sold']
-    ols_model = sm.OLS(y, X).fit()
+    y_bowls = model_df['Bowls_Sold']
+    ols_model_bowls = sm.OLS(y_bowls, X).fit()
     
-    # Calculate predictions and errors for all historical data
-    model_df['Predicted'] = ols_model.predict(X)
-    model_df['Error'] = model_df['Bowls_Sold'] - model_df['Predicted']
-    model_df['Error_Pct'] = (model_df['Error'] / model_df['Bowls_Sold'] * 100).abs()
+    # Calculate predictions and errors for Model A
+    model_df['Predicted_Bowls'] = ols_model_bowls.predict(X)
+    model_df['Error_Bowls'] = model_df['Bowls_Sold'] - model_df['Predicted_Bowls']
+    model_df['Error_Pct_Bowls'] = (model_df['Error_Bowls'] / model_df['Bowls_Sold'] * 100).abs()
+    mae_bowls = model_df['Error_Bowls'].abs().mean()
+    mape_bowls = model_df['Error_Pct_Bowls'].mean()
     
-    # Calculate MAE (Mean Absolute Error)
-    mae = model_df['Error'].abs().mean()
+    # --- MODEL B: ORDER COUNT (Transaction Count) ---
+    # Total_Orders ~ Same features as Model A
+    y_orders = model_df['Total_Orders']
+    ols_model_orders = sm.OLS(y_orders, X).fit()
+    
+    # Calculate predictions and errors for Model B
+    model_df['Predicted_Orders'] = ols_model_orders.predict(X)
+    model_df['Error_Orders'] = model_df['Total_Orders'] - model_df['Predicted_Orders']
+    model_df['Error_Pct_Orders'] = (model_df['Error_Orders'] / model_df['Total_Orders'] * 100).abs()
+    mae_orders = model_df['Error_Orders'].abs().mean()
+    mape_orders = model_df['Error_Pct_Orders'].mean()
+    
+    # Use Model A (bowls) for predictions (keeping existing functionality)
+    ols_model = ols_model_bowls
+    mae = mae_bowls
+    
+    # --- MODEL COMPARISON: BOWLS VS ORDERS ---
+    st.header("📊 Model Comparison: Bowl Count vs Order Count")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("🍜 Model A: Bowl Count")
+        st.metric("R²", f"{ols_model_bowls.rsquared:.4f}")
+        st.metric("Adjusted R²", f"{ols_model_bowls.rsquared_adj:.4f}")
+        st.metric("MAE", f"{mae_bowls:.2f} bowls")
+        st.metric("MAPE", f"{mape_bowls:.2f}%")
+        st.caption("Predicts total Pho bowls sold per day")
+    
+    with col2:
+        st.subheader("📋 Model B: Order Count")
+        st.metric("R²", f"{ols_model_orders.rsquared:.4f}")
+        st.metric("Adjusted R²", f"{ols_model_orders.rsquared_adj:.4f}")
+        st.metric("MAE", f"{mae_orders:.2f} orders")
+        st.metric("MAPE", f"{mape_orders:.2f}%")
+        st.caption("Predicts total transactions per day")
+    
+    # Comparison insights
+    if ols_model_orders.rsquared > ols_model_bowls.rsquared:
+        winner = "Order Count"
+        diff = ((ols_model_orders.rsquared - ols_model_bowls.rsquared) / ols_model_bowls.rsquared * 100)
+        st.success(f"✅ **{winner}** shows stronger predictive power ({diff:.1f}% higher R²)")
+    else:
+        winner = "Bowl Count"
+        diff = ((ols_model_bowls.rsquared - ols_model_orders.rsquared) / ols_model_orders.rsquared * 100)
+        st.success(f"✅ **{winner}** shows stronger predictive power ({diff:.1f}% higher R²)")
+    
+    if mape_orders < mape_bowls:
+        st.info(f"📉 Order Count has {((mape_bowls - mape_orders) / mape_bowls * 100):.1f}% lower prediction error (MAPE)")
+    else:
+        st.info(f"📉 Bowl Count has {((mape_orders - mape_bowls) / mape_orders * 100):.1f}% lower prediction error (MAPE)")
+    
+    st.divider()
 
     # --- TOMORROW'S PREDICTION (Top Section) ---
     st.header("📅 Tomorrow's Forecast")
