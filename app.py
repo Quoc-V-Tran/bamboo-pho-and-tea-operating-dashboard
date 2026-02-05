@@ -83,14 +83,27 @@ try:
     # Naval Base (NSA Mechanicsburg) Traffic Effects
     merged['Date_dt'] = pd.to_datetime(merged['Date'])
     
-    # 1. Federal Payday: Bi-weekly Fridays starting Jan 9, 2026
-    federal_payday_start = pd.Timestamp('2026-01-09')  # First federal payday Friday
-    merged['days_since_start'] = (merged['Date_dt'] - federal_payday_start).dt.days
-    merged['is_federal_payday'] = (
-        (merged['Day_of_Week'] == 'Friday') & 
-        (merged['days_since_start'] >= 0) & 
-        (merged['days_since_start'] % 14 == 0)
-    ).astype(int)
+    # 1. Federal Payday: Bi-weekly Fridays (2025 + 2026)
+    # Generate all federal payday Fridays for 2025-2026
+    # Start from a known payday (Jan 9, 2026) and go backwards/forwards
+    federal_payday_anchor = pd.Timestamp('2026-01-09')
+    
+    # Generate payday dates going backwards to cover 2025
+    federal_paydays = []
+    current_date = federal_payday_anchor
+    
+    # Go backwards to start of 2025
+    while current_date >= pd.Timestamp('2025-01-01'):
+        federal_paydays.append(current_date)
+        current_date = current_date - pd.Timedelta(days=14)
+    
+    # Go forwards to end of 2026
+    current_date = federal_payday_anchor + pd.Timedelta(days=14)
+    while current_date <= pd.Timestamp('2026-12-31'):
+        federal_paydays.append(current_date)
+        current_date = current_date + pd.Timedelta(days=14)
+    
+    merged['is_federal_payday'] = merged['Date_dt'].isin(federal_paydays).astype(int)
     
     # 2. Payday Weekend: Saturday/Sunday after federal payday Friday
     # Shift federal payday forward by 1 and 2 days to capture weekend effect

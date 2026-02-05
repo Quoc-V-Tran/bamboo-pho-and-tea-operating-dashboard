@@ -89,14 +89,23 @@ try:
     # Naval Base Traffic Effects
     merged['Date_dt'] = pd.to_datetime(merged['Date'])
     
-    # Federal Payday: Bi-weekly Fridays starting Jan 9, 2026
-    federal_payday_start = pd.Timestamp('2026-01-09')
-    merged['days_since_start'] = (merged['Date_dt'] - federal_payday_start).dt.days
-    merged['is_federal_payday'] = (
-        (merged['Day_of_Week'] == 'Friday') & 
-        (merged['days_since_start'] >= 0) & 
-        (merged['days_since_start'] % 14 == 0)
-    ).astype(int)
+    # Federal Payday: Bi-weekly Fridays (2025 + 2026)
+    federal_payday_anchor = pd.Timestamp('2026-01-09')
+    federal_paydays = []
+    current_date = federal_payday_anchor
+    
+    # Go backwards to cover 2025
+    while current_date >= pd.Timestamp('2025-01-01'):
+        federal_paydays.append(current_date)
+        current_date = current_date - pd.Timedelta(days=14)
+    
+    # Go forwards to cover rest of 2026
+    current_date = federal_payday_anchor + pd.Timedelta(days=14)
+    while current_date <= pd.Timestamp('2026-12-31'):
+        federal_paydays.append(current_date)
+        current_date = current_date + pd.Timedelta(days=14)
+    
+    merged['is_federal_payday'] = merged['Date_dt'].isin(federal_paydays).astype(int)
     
     # Payday Weekend
     merged['is_payday_weekend'] = 0
