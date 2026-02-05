@@ -80,6 +80,31 @@ try:
     # Mixed precipitation dummy (only significant precipitation type)
     merged['is_mixed_precip'] = (merged['Precip_Type'] == 'Mixed').astype(int)
     
+    # Naval Base (NSA Mechanicsburg) Traffic Effects
+    merged['Date_dt'] = pd.to_datetime(merged['Date'])
+    
+    # 1. Federal Payday: Bi-weekly Fridays starting Jan 9, 2026
+    federal_payday_start = pd.Timestamp('2026-01-09')  # First federal payday Friday
+    merged['days_since_start'] = (merged['Date_dt'] - federal_payday_start).dt.days
+    merged['is_federal_payday'] = (
+        (merged['Day_of_Week'] == 'Friday') & 
+        (merged['days_since_start'] >= 0) & 
+        (merged['days_since_start'] % 14 == 0)
+    ).astype(int)
+    
+    # 2. Payday Weekend: Saturday/Sunday after federal payday Friday
+    # Shift federal payday forward by 1 and 2 days to capture weekend effect
+    merged['is_payday_weekend'] = 0
+    payday_dates = merged[merged['is_federal_payday'] == 1]['Date_dt']
+    for payday_date in payday_dates:
+        # Mark the Saturday (day after payday Friday)
+        merged.loc[merged['Date_dt'] == payday_date + pd.Timedelta(days=1), 'is_payday_weekend'] = 1
+        # Mark the Sunday (2 days after payday Friday)
+        merged.loc[merged['Date_dt'] == payday_date + pd.Timedelta(days=2), 'is_payday_weekend'] = 1
+    
+    # 3. Friday Base Traffic (proxy for Friday lunch rush from NSA Mechanicsburg)
+    merged['is_friday_base'] = (merged['Day_of_Week'] == 'Friday').astype(int)
+    
     # Filter for active days only (Exclude Mondays/zeros)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
@@ -99,9 +124,9 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD PARSIMONIOUS MODEL (ONLY SIGNIFICANT FEATURES) ---
-    # Bowls_Sold ~ Intercept + Temp_Centered + is_weekend + is_mixed_precip
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip']]
+    # --- BUILD MODEL WITH BASE TRAFFIC EFFECTS ---
+    # Bowls_Sold ~ Intercept + Temp + Weekend + Mixed + Federal_Payday + Payday_Weekend + Friday_Base
+    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 'is_payday_weekend', 'is_friday_base']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -122,45 +147,54 @@ try:
         tomorrow_is_weekend = st.checkbox("Weekend Day (Fri-Sun)", value=False)
         tomorrow_is_mixed = st.checkbox("Mixed Precipitation", value=False)
         
+        st.markdown("**🏛️ Naval Base Traffic (NSA Mechanicsburg)**")
+        tomorrow_is_fed_payday = st.checkbox("Federal Payday (bi-weekly Friday)", value=False,
+                                             help="Every other Friday starting Jan 9, 2026")
+        tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after payday)", value=False,
+                                              help="Saturday or Sunday after federal payday")
+        tomorrow_is_friday_base = st.checkbox("Friday (Base lunch traffic)", value=False,
+                                              help="Friday lunch rush from NSA Mechanicsburg")
+        
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
         
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
                         (ols_model.params['is_weekend'] * (1 if tomorrow_is_weekend else 0)) +
-                        (ols_model.params['is_mixed_precip'] * (1 if tomorrow_is_mixed else 0)))
+                        (ols_model.params['is_mixed_precip'] * (1 if tomorrow_is_mixed else 0)) +
+                        (ols_model.params['is_federal_payday'] * (1 if tomorrow_is_fed_payday else 0)) +
+                        (ols_model.params['is_payday_weekend'] * (1 if tomorrow_is_payday_wknd else 0)) +
+                        (ols_model.params['is_friday_base'] * (1 if tomorrow_is_friday_base else 0)))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Parsimonious model: Temp + Weekend + Mixed (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Model with base traffic effects (Mean temp: {mean_temp:.1f}°F)")
     
     with pred_col2:
         st.subheader("📊 Historical Stats & Model Coefficients")
         
-        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+        stat_col1, stat_col2 = st.columns(2)
         
         with stat_col1:
             avg_bowls = model_df['Bowls_Sold'].mean()
             st.metric("Avg Daily Bowls", f"{avg_bowls:.1f}")
             st.metric("Model R²", f"{ols_model.rsquared:.3f}",
                      help="Proportion of variance explained")
-        
-        with stat_col2:
             st.metric("🌡️ Temp Effect", f"{ols_model.params['Temp_Centered']:.2f}/°F",
                      help="Colder = More sales")
-            st.metric("📅 Weekend Lift", f"+{ols_model.params['is_weekend']:.1f}",
-                     help="Fri/Sat/Sun boost")
-        
-        with stat_col3:
-            st.metric("🌧️ Mixed Precip", f"+{ols_model.params['is_mixed_precip']:.1f}",
-                     help="Mixed weather boost")
             avg_error_pct = model_df['Error_Pct'].mean()
             st.metric("Avg Error %", f"{avg_error_pct:.1f}%",
                      help="Average absolute % error")
         
-        with stat_col4:
-            st.metric("Total Bowls", f"{int(model_df['Bowls_Sold'].sum())}")
-            st.metric("Observations", f"{int(ols_model.nobs)}")
+        with stat_col2:
+            st.metric("📅 Weekend", f"+{ols_model.params['is_weekend']:.1f}",
+                     help="Fri/Sat/Sun boost")
+            st.metric("🌧️ Mixed Precip", f"+{ols_model.params['is_mixed_precip']:.1f}",
+                     help="Mixed weather boost")
+            st.metric("🏛️ Fed Payday Fri", f"{ols_model.params['is_federal_payday']:+.1f}",
+                     help="Bi-weekly federal payday")
+            st.metric("💰 Payday Weekend", f"{ols_model.params['is_payday_weekend']:+.1f}",
+                     help="Sat/Sun after payday")
 
     st.divider()
     

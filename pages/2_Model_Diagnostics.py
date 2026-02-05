@@ -83,8 +83,30 @@ try:
     # Weekend binary
     merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
     
-    # Mixed precipitation (only significant precipitation type)
+    # Mixed precipitation
     merged['is_mixed_precip'] = (merged['Precip_Type'] == 'Mixed').astype(int)
+    
+    # Naval Base Traffic Effects
+    merged['Date_dt'] = pd.to_datetime(merged['Date'])
+    
+    # Federal Payday: Bi-weekly Fridays starting Jan 9, 2026
+    federal_payday_start = pd.Timestamp('2026-01-09')
+    merged['days_since_start'] = (merged['Date_dt'] - federal_payday_start).dt.days
+    merged['is_federal_payday'] = (
+        (merged['Day_of_Week'] == 'Friday') & 
+        (merged['days_since_start'] >= 0) & 
+        (merged['days_since_start'] % 14 == 0)
+    ).astype(int)
+    
+    # Payday Weekend
+    merged['is_payday_weekend'] = 0
+    payday_dates = merged[merged['is_federal_payday'] == 1]['Date_dt']
+    for payday_date in payday_dates:
+        merged.loc[merged['Date_dt'] == payday_date + pd.Timedelta(days=1), 'is_payday_weekend'] = 1
+        merged.loc[merged['Date_dt'] == payday_date + pd.Timedelta(days=2), 'is_payday_weekend'] = 1
+    
+    # Friday Base Traffic
+    merged['is_friday_base'] = (merged['Day_of_Week'] == 'Friday').astype(int)
     
     # Prepare model data
     model_df = merged[
@@ -96,8 +118,8 @@ try:
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run parsimonious OLS regression (only significant features)
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip']]
+    # Run OLS regression with base traffic effects
+    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 'is_payday_weekend', 'is_friday_base']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -115,7 +137,10 @@ try:
             ols_model.params['const'] + 
             (ols_model.params['Temp_Centered'] * recent_df['Temp_Centered']) +
             (ols_model.params['is_weekend'] * recent_df['is_weekend']) +
-            (ols_model.params['is_mixed_precip'] * recent_df['is_mixed_precip'])
+            (ols_model.params['is_mixed_precip'] * recent_df['is_mixed_precip']) +
+            (ols_model.params['is_federal_payday'] * recent_df['is_federal_payday']) +
+            (ols_model.params['is_payday_weekend'] * recent_df['is_payday_weekend']) +
+            (ols_model.params['is_friday_base'] * recent_df['is_friday_base'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -176,10 +201,13 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (Midweek, No Mixed Precip, {mean_temp:.1f}°F)',
+        'const': f'Intercept (Baseline: Tue-Thu, {mean_temp:.1f}°F)',
         'Temp_Centered': 'Temperature (centered)',
         'is_weekend': 'Weekend (Fri/Sat/Sun)',
-        'is_mixed_precip': 'Mixed Precipitation'
+        'is_mixed_precip': 'Mixed Precipitation',
+        'is_federal_payday': 'Federal Payday Friday (bi-weekly)',
+        'is_payday_weekend': 'Payday Weekend (Sat/Sun after payday)',
+        'is_friday_base': 'Friday (Base Traffic)'
     }
     
     for var in params.index:
