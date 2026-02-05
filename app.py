@@ -160,16 +160,47 @@ try:
     # Interaction: 2026 × Friday (Test if Navy base effect strengthened in 2026)
     merged['is_2026_friday'] = (merged['is_2026'] * merged['is_weekly_friday']).astype(int)
     
-    # --- MONTHLY LIQUIDITY CYCLE ---
-    # Pre-Rent Surge: Days 28-31 (end of month, before rent due)
-    merged['is_pre_rent_surge'] = merged['Date_dt'].dt.day.isin([28, 29, 30, 31]).astype(int)
+    # --- SCHOOL HOLIDAY EFFECT ---
+    # Define school holiday ranges (when families have time off)
+    school_holidays = [
+        # Winter Break
+        ('2023-12-22', '2024-01-01'),
+        ('2024-12-23', '2025-01-01'),
+        ('2025-12-24', '2026-01-02'),
+        # Spring Break
+        ('2024-03-28', '2024-04-01'),
+        ('2025-04-14', '2025-04-21'),
+        ('2026-03-20', '2026-03-24'),
+        # Thanksgiving Break
+        ('2023-11-23', '2023-11-27'),
+        ('2024-11-28', '2024-12-02'),
+        ('2025-11-27', '2025-11-28'),
+    ]
     
-    # Post-Rent Dip: Days 2-5 (beginning of month, after paying rent)
-    merged['is_post_rent_dip'] = merged['Date_dt'].dt.day.isin([2, 3, 4, 5]).astype(int)
+    # Single day holidays
+    single_day_holidays = [
+        # MLK Day
+        '2024-01-15', '2025-01-20', '2026-01-19',
+        # Presidents' Day
+        '2024-02-19', '2025-02-17', '2026-02-16',
+        # Memorial Day
+        '2024-05-27', '2025-05-26', '2026-05-25',
+        # Labor Day
+        '2024-09-02', '2025-09-01', '2026-09-07',
+    ]
     
-    # Interactions: Test if rent cycle effect is stronger in 2026 (budget sensitivity hypothesis)
-    merged['is_2026_post_rent_dip'] = (merged['is_2026'] * merged['is_post_rent_dip']).astype(int)
-    merged['is_2026_pre_rent_surge'] = (merged['is_2026'] * merged['is_pre_rent_surge']).astype(int)
+    # Initialize column
+    merged['is_school_holiday'] = 0
+    
+    # Mark date ranges
+    for start, end in school_holidays:
+        date_range = pd.date_range(start=start, end=end, freq='D')
+        merged.loc[merged['Date_dt'].isin(date_range), 'is_school_holiday'] = 1
+    
+    # Mark single days
+    for date_str in single_day_holidays:
+        date_obj = pd.to_datetime(date_str).date()
+        merged.loc[merged['Date'] == date_obj, 'is_school_holiday'] = 1
     
     # Filter for active days only (Exclude Mondays and zero sales)
     model_df = merged[
@@ -211,15 +242,14 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD MODEL WITH PAYDAY + LIQUIDITY CYCLE + YEAR CONTROLS ---
+    # --- BUILD MODEL WITH PAYDAY + SCHOOL HOLIDAY + YEAR CONTROLS ---
     # Bowls_Sold ~ Temp + Weekend + Rain + Snow + Federal_Payday + Payday_Weekend + 
     #              Weekly_Friday + Semi_Monthly + Semi_Monthly×Weekend + Year_2024 + Year_2025 + 
-    #              2026×Friday + Pre_Rent_Surge + Post_Rent_Dip + 2026×Post_Rent + 2026×Pre_Rent
+    #              2026×Friday + School_Holiday
     # Note: is_clear is baseline for precipitation, 2026 is baseline for year
     X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                  'is_2024', 'is_2025', 'is_2026_friday', 'is_pre_rent_surge', 'is_post_rent_dip',
-                  'is_2026_post_rent_dip', 'is_2026_pre_rent_surge']]
+                  'is_2024', 'is_2025', 'is_2026_friday', 'is_school_holiday']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
@@ -259,24 +289,17 @@ try:
             tomorrow_is_fed_payday = st.checkbox("Federal Payday Friday", value=False, help="Bi-weekly NSA")
             tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after)", value=False)
         
-        st.markdown("**📅 Monthly Liquidity Cycle**")
-        col_e, col_f = st.columns(2)
-        with col_e:
-            tomorrow_is_pre_rent = st.checkbox("Pre-Rent Surge (Days 28-31)", value=False,
-                                               help="End of month spending surge")
-        with col_f:
-            tomorrow_is_post_rent = st.checkbox("Post-Rent Dip (Days 2-5)", value=False,
-                                                help="Post-rent cash constraint")
+        st.markdown("**🎓 School Holiday**")
+        tomorrow_is_school_holiday = st.checkbox("School Holiday / Break", value=False,
+                                                  help="Winter/Spring/Thanksgiving breaks, MLK, Presidents' Day, Memorial Day, Labor Day")
         
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
         
         # Interactions
         tomorrow_semi_wknd = (1 if tomorrow_is_semi_monthly else 0) * (1 if tomorrow_is_weekend else 0)
-        # Tomorrow is assumed to be 2026 (is_2024=0, is_2025=0, is_2026=1)
+        # Tomorrow is assumed to be 2026 (is_2024=0, is_2025=0)
         tomorrow_2026_friday = 1 if tomorrow_is_weekly_friday else 0
-        tomorrow_2026_post_rent = 1 if tomorrow_is_post_rent else 0  # is_2026=1 * is_post_rent
-        tomorrow_2026_pre_rent = 1 if tomorrow_is_pre_rent else 0    # is_2026=1 * is_pre_rent
         
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
@@ -291,14 +314,11 @@ try:
                         (ols_model.params['is_2024'] * 0) +  # Tomorrow is 2026, not 2024
                         (ols_model.params['is_2025'] * 0) +  # Tomorrow is 2026, not 2025
                         (ols_model.params['is_2026_friday'] * tomorrow_2026_friday) +
-                        (ols_model.params['is_pre_rent_surge'] * (1 if tomorrow_is_pre_rent else 0)) +
-                        (ols_model.params['is_post_rent_dip'] * (1 if tomorrow_is_post_rent else 0)) +
-                        (ols_model.params['is_2026_post_rent_dip'] * tomorrow_2026_post_rent) +
-                        (ols_model.params['is_2026_pre_rent_surge'] * tomorrow_2026_pre_rent))
+                        (ols_model.params['is_school_holiday'] * (1 if tomorrow_is_school_holiday else 0)))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Model with 2026 budget sensitivity test (16 features, Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Model with school holiday effect (13 features, Mean temp: {mean_temp:.1f}°F)")
         
         # --- CAPACITY CONSTRAINT ANALYSIS ---
         MAX_DINE_IN_CAPACITY = 80  # Based on 10 tables, ~3 turns/day, 2.5 bowls/table avg

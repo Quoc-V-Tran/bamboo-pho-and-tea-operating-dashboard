@@ -185,13 +185,47 @@ try:
     # Interaction: 2026 × Friday (Test if Navy base effect strengthened in 2026)
     merged['is_2026_friday'] = (merged['is_2026'] * merged['is_weekly_friday']).astype(int)
     
-    # Monthly Liquidity Cycle
-    merged['is_pre_rent_surge'] = merged['Date_dt'].dt.day.isin([28, 29, 30, 31]).astype(int)
-    merged['is_post_rent_dip'] = merged['Date_dt'].dt.day.isin([2, 3, 4, 5]).astype(int)
+    # --- SCHOOL HOLIDAY EFFECT ---
+    # Define school holiday ranges (when families have time off)
+    school_holidays = [
+        # Winter Break
+        ('2023-12-22', '2024-01-01'),
+        ('2024-12-23', '2025-01-01'),
+        ('2025-12-24', '2026-01-02'),
+        # Spring Break
+        ('2024-03-28', '2024-04-01'),
+        ('2025-04-14', '2025-04-21'),
+        ('2026-03-20', '2026-03-24'),
+        # Thanksgiving Break
+        ('2023-11-23', '2023-11-27'),
+        ('2024-11-28', '2024-12-02'),
+        ('2025-11-27', '2025-11-28'),
+    ]
     
-    # Interactions: Test if rent cycle effect is stronger in 2026 (budget sensitivity hypothesis)
-    merged['is_2026_post_rent_dip'] = (merged['is_2026'] * merged['is_post_rent_dip']).astype(int)
-    merged['is_2026_pre_rent_surge'] = (merged['is_2026'] * merged['is_pre_rent_surge']).astype(int)
+    # Single day holidays
+    single_day_holidays = [
+        # MLK Day
+        '2024-01-15', '2025-01-20', '2026-01-19',
+        # Presidents' Day
+        '2024-02-19', '2025-02-17', '2026-02-16',
+        # Memorial Day
+        '2024-05-27', '2025-05-26', '2026-05-25',
+        # Labor Day
+        '2024-09-02', '2025-09-01', '2026-09-07',
+    ]
+    
+    # Initialize column
+    merged['is_school_holiday'] = 0
+    
+    # Mark date ranges
+    for start, end in school_holidays:
+        date_range = pd.date_range(start=start, end=end, freq='D')
+        merged.loc[merged['Date_dt'].isin(date_range), 'is_school_holiday'] = 1
+    
+    # Mark single days
+    for date_str in single_day_holidays:
+        date_obj = pd.to_datetime(date_str).date()
+        merged.loc[merged['Date'] == date_obj, 'is_school_holiday'] = 1
     
     # Prepare model data (exclude Mondays and zero sales)
     model_df = merged[
@@ -203,12 +237,11 @@ try:
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run model with payday, liquidity cycle, year controls, and 2026 budget sensitivity test
+    # Run model with payday, school holiday, and year controls
     # Note: is_clear is baseline for precipitation, 2026 is baseline for year
     X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_federal_payday', 
                   'is_payday_weekend', 'is_weekly_friday', 'is_semi_monthly', 'is_semi_monthly_weekend',
-                  'is_2024', 'is_2025', 'is_2026_friday', 'is_pre_rent_surge', 'is_post_rent_dip',
-                  'is_2026_post_rent_dip', 'is_2026_pre_rent_surge']]
+                  'is_2024', 'is_2025', 'is_2026_friday', 'is_school_holiday']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -348,10 +381,7 @@ try:
             (ols_model.params['is_2024'] * recent_df['is_2024']) +
             (ols_model.params['is_2025'] * recent_df['is_2025']) +
             (ols_model.params['is_2026_friday'] * recent_df['is_2026_friday']) +
-            (ols_model.params['is_pre_rent_surge'] * recent_df['is_pre_rent_surge']) +
-            (ols_model.params['is_post_rent_dip'] * recent_df['is_post_rent_dip']) +
-            (ols_model.params['is_2026_post_rent_dip'] * recent_df['is_2026_post_rent_dip']) +
-            (ols_model.params['is_2026_pre_rent_surge'] * recent_df['is_2026_pre_rent_surge'])
+            (ols_model.params['is_school_holiday'] * recent_df['is_school_holiday'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -412,7 +442,7 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (Baseline: 2026, Tue-Thu, Clear, {mean_temp:.1f}°F, Mid-month)',
+        'const': f'Intercept (Baseline: 2026, Tue-Thu, Clear, {mean_temp:.1f}°F, Regular school day)',
         'Temp_Centered': 'Temperature (centered)',
         'is_weekend': 'Weekend (Sat/Sun only)',
         'is_rain': 'Rain/Mixed (vs Clear)',
@@ -425,10 +455,7 @@ try:
         'is_2024': 'Year 2024 (vs 2026 baseline)',
         'is_2025': 'Year 2025 (vs 2026 baseline)',
         'is_2026_friday': '2026 × Friday (Navy base effect strengthening)',
-        'is_pre_rent_surge': 'Pre-Rent Surge (Days 28-31, baseline effect 2024-2026)',
-        'is_post_rent_dip': 'Post-Rent Dip (Days 2-5, baseline effect 2024-2026)',
-        'is_2026_post_rent_dip': '2026 × Post-Rent Dip (2026-specific budget sensitivity)',
-        'is_2026_pre_rent_surge': '2026 × Pre-Rent Surge (2026-specific spending behavior)'
+        'is_school_holiday': 'School Holiday / Break (families have time off)'
     }
     
     for var in params.index:
