@@ -170,28 +170,22 @@ try:
     # Interaction: Pre-Holiday × Friday ('I'm not cooking before the long weekend')
     merged['is_pre_holiday_friday'] = (merged['is_pre_holiday'] * merged['is_friday_base']).astype(int)
     
-    # --- COMPETITOR CLOSURE EFFECTS (Overflow Demand) ---
-    # Based on field research of Greater Harrisburg competitor schedules
-    merged['little_saigon_closed'] = (merged['Day_of_Week'] == 'Tuesday').astype(int)
-    merged['pho_kims_closed'] = (merged['Day_of_Week'] == 'Sunday').astype(int)
-    merged['pho_la_vie_closed'] = (merged['Day_of_Week'] == 'Monday').astype(int)
-    merged['la_squared_closed'] = (merged['Day_of_Week'] == 'Sunday').astype(int)
+    # --- AUTOREGRESSIVE (LAGGED) FEATURES ---
+    # Sort by date to ensure proper lag calculation
+    merged = merged.sort_values('Date_dt').reset_index(drop=True)
     
-    # Aggregate Overflow Index: How many competitors are closed today?
-    merged['competitor_overflow_index'] = (
-        merged['little_saigon_closed'] + 
-        merged['pho_kims_closed'] + 
-        merged['pho_la_vie_closed'] + 
-        merged['la_squared_closed']
-    )
+    # lag_1: Previous day's sales (immediate momentum)
+    merged['lag_1'] = merged['Bowls_Sold'].shift(1)
     
-    # Interaction: Overflow × Weekend (Sundays have 2 major competitors closed)
-    merged['overflow_weekend'] = (merged['competitor_overflow_index'] * merged['is_weekend']).astype(int)
+    # lag_7: Sales from 7 days ago (weekly patterns)
+    merged['lag_7'] = merged['Bowls_Sold'].shift(7)
     
-    # Filter for active days only (Exclude Mondays AND any days with zero sales)
+    # Filter for active days only (Exclude Mondays, zero sales, AND missing lag data)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
-        (merged['Bowls_Sold'] > 0)
+        (merged['Bowls_Sold'] > 0) &
+        (merged['lag_1'].notna()) &
+        (merged['lag_7'].notna())
     ].copy()
     
     # Center temperature variable (subtract mean)
@@ -207,22 +201,25 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD COMPREHENSIVE MODEL WITH BASE + HOLIDAY + COMPETITOR EFFECTS ---
+    # --- BUILD STREAMLINED MODEL WITH AUTOREGRESSIVE FEATURES ---
     # Bowls_Sold ~ Temp + Weekend(Sat/Sun) + Mixed + Federal_Payday + Payday_Weekend + 
     #              Friday_Base + Pre_Holiday + Post_Holiday + Valentines + Lunar_NY + 
-    #              Pre_Holiday×Friday + Competitor_Overflow + Overflow×Weekend
+    #              Pre_Holiday×Friday + lag_1 + lag_7
     X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 
                   'is_payday_weekend', 'is_friday_base', 'is_pre_holiday', 'is_post_holiday',
                   'is_valentines_period', 'is_lunar_new_year', 'is_pre_holiday_friday',
-                  'competitor_overflow_index', 'overflow_weekend']]
+                  'lag_1', 'lag_7']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
     
-    # Calculate predictions for all historical data
+    # Calculate predictions and errors for all historical data
     model_df['Predicted'] = ols_model.predict(X)
     model_df['Error'] = model_df['Bowls_Sold'] - model_df['Predicted']
     model_df['Error_Pct'] = (model_df['Error'] / model_df['Bowls_Sold'] * 100).abs()
+    
+    # Calculate MAE (Mean Absolute Error)
+    mae = model_df['Error'].abs().mean()
 
     # --- TOMORROW'S PREDICTION (Top Section) ---
     st.header("📅 Tomorrow's Forecast")
@@ -252,29 +249,28 @@ try:
         
         tomorrow_is_payday_wknd = st.checkbox("Payday Weekend (Sat/Sun after fed payday)", value=False)
         
-        st.markdown("**🏪 Competitor Closures (Overflow Demand)**")
+        st.markdown("**📊 Lagged Sales (Autoregressive)**")
+        # Get most recent sales data as defaults
+        most_recent_day = model_df.iloc[-1]
+        day_7_ago = model_df.iloc[-7] if len(model_df) >= 7 else most_recent_day
+        
         col_e, col_f = st.columns(2)
         with col_e:
-            tomorrow_little_saigon = st.checkbox("Little Saigon closed (Tue)", value=False)
-            tomorrow_pho_kims = st.checkbox("Pho Kim's closed (Sun)", value=False)
+            tomorrow_lag_1 = st.number_input("Today's Actual Sales", 
+                                            min_value=0, max_value=200, 
+                                            value=int(most_recent_day['Bowls_Sold']),
+                                            help="Actual bowls sold today (lag_1)")
         with col_f:
-            tomorrow_pho_la_vie = st.checkbox("Pho La Vie closed (Mon)", value=False)
-            tomorrow_la_squared = st.checkbox("The LA Squared closed (Sun)", value=False)
-        
-        # Calculate competitor overflow index
-        tomorrow_overflow = (
-            (1 if tomorrow_little_saigon else 0) +
-            (1 if tomorrow_pho_kims else 0) +
-            (1 if tomorrow_pho_la_vie else 0) +
-            (1 if tomorrow_la_squared else 0)
-        )
+            tomorrow_lag_7 = st.number_input("Sales 7 Days Ago", 
+                                            min_value=0, max_value=200, 
+                                            value=int(day_7_ago['Bowls_Sold']),
+                                            help="Bowls sold same day last week (lag_7)")
         
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
         
-        # Interactions
+        # Interaction
         tomorrow_pre_hol_fri = (1 if tomorrow_is_pre_holiday else 0) * (1 if tomorrow_is_friday_base else 0)
-        tomorrow_overflow_wknd = tomorrow_overflow * (1 if tomorrow_is_weekend else 0)
         
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
@@ -288,15 +284,12 @@ try:
                         (ols_model.params['is_valentines_period'] * (1 if tomorrow_is_valentines else 0)) +
                         (ols_model.params['is_lunar_new_year'] * (1 if tomorrow_is_lunar_ny else 0)) +
                         (ols_model.params['is_pre_holiday_friday'] * tomorrow_pre_hol_fri) +
-                        (ols_model.params['competitor_overflow_index'] * tomorrow_overflow) +
-                        (ols_model.params['overflow_weekend'] * tomorrow_overflow_wknd))
-        
-        if tomorrow_overflow > 0:
-            st.info(f"💡 {tomorrow_overflow} competitor(s) closed → Overflow demand expected!")
+                        (ols_model.params['lag_1'] * tomorrow_lag_1) +
+                        (ols_model.params['lag_7'] * tomorrow_lag_7))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Comprehensive model with 13 features (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Autoregressive model with lagged features (Mean temp: {mean_temp:.1f}°F)")
     
     with pred_col2:
         st.subheader("📊 Model Performance")
@@ -304,13 +297,12 @@ try:
         stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
         
         with stat_col1:
-            avg_bowls = model_df['Bowls_Sold'].mean()
-            st.metric("Avg Daily Bowls", f"{avg_bowls:.1f}")
-            st.metric("Model R²", f"{ols_model.rsquared:.3f}",
+            st.markdown("**Fit Metrics**")
+            st.metric("R²", f"{ols_model.rsquared:.3f}",
                      help="Variance explained")
             st.metric("Adj. R²", f"{ols_model.rsquared_adj:.3f}")
-            avg_error_pct = model_df['Error_Pct'].mean()
-            st.metric("Avg Error %", f"{avg_error_pct:.1f}%")
+            st.metric("MAE", f"{mae:.2f} bowls",
+                     help="Mean Absolute Error")
         
         with stat_col2:
             st.markdown("**Core**")
@@ -325,16 +317,18 @@ try:
             st.metric("🧧 Lunar", f"{ols_model.params['is_lunar_new_year']:+.1f}")
         
         with stat_col4:
-            st.markdown("**Overflow**")
-            st.metric("🏪 Index", f"+{ols_model.params['competitor_overflow_index']:.1f}",
-                     help="Per competitor closed")
-            st.metric("🏪×📅 Wknd", f"+{ols_model.params['overflow_weekend']:.1f}",
-                     help="Overflow on weekends")
+            st.markdown("**Momentum**")
+            st.metric("📊 lag_1", f"{ols_model.params['lag_1']:.3f}",
+                     help="Yesterday's sales coefficient")
+            st.metric("📊 lag_7", f"{ols_model.params['lag_7']:.3f}",
+                     help="7 days ago coefficient")
             
-            # Calculate p-value significance
-            p_overflow = ols_model.pvalues['competitor_overflow_index']
-            sig = "***" if p_overflow < 0.001 else "**" if p_overflow < 0.01 else "*" if p_overflow < 0.05 else "ns"
-            st.caption(f"Overflow p={p_overflow:.4f} {sig}")
+            # Calculate p-values for lags
+            p_lag1 = ols_model.pvalues['lag_1']
+            p_lag7 = ols_model.pvalues['lag_7']
+            sig1 = "***" if p_lag1 < 0.001 else "**" if p_lag1 < 0.01 else "*" if p_lag1 < 0.05 else "ns"
+            sig7 = "***" if p_lag7 < 0.001 else "**" if p_lag7 < 0.01 else "*" if p_lag7 < 0.05 else "ns"
+            st.caption(f"lag_1: {sig1} | lag_7: {sig7}")
 
     st.divider()
     

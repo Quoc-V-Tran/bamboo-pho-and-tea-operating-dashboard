@@ -148,39 +148,34 @@ try:
     
     merged['is_pre_holiday_friday'] = (merged['is_pre_holiday'] * merged['is_friday_base']).astype(int)
     
-    # Competitor Closure Effects (Overflow Demand)
-    merged['little_saigon_closed'] = (merged['Day_of_Week'] == 'Tuesday').astype(int)
-    merged['pho_kims_closed'] = (merged['Day_of_Week'] == 'Sunday').astype(int)
-    merged['pho_la_vie_closed'] = (merged['Day_of_Week'] == 'Monday').astype(int)
-    merged['la_squared_closed'] = (merged['Day_of_Week'] == 'Sunday').astype(int)
+    # Autoregressive (Lagged) Features
+    merged = merged.sort_values('Date_dt').reset_index(drop=True)
+    merged['lag_1'] = merged['Bowls_Sold'].shift(1)
+    merged['lag_7'] = merged['Bowls_Sold'].shift(7)
     
-    merged['competitor_overflow_index'] = (
-        merged['little_saigon_closed'] + 
-        merged['pho_kims_closed'] + 
-        merged['pho_la_vie_closed'] + 
-        merged['la_squared_closed']
-    )
-    
-    merged['overflow_weekend'] = (merged['competitor_overflow_index'] * merged['is_weekend']).astype(int)
-    
-    # Prepare model data
+    # Prepare model data (exclude Mondays, zero sales, and missing lags)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
-        (merged['Bowls_Sold'] > 0)
+        (merged['Bowls_Sold'] > 0) &
+        (merged['lag_1'].notna()) &
+        (merged['lag_7'].notna())
     ].copy()
     
     # Center temperature
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run comprehensive OLS regression with competitor effects
+    # Run streamlined OLS regression with autoregressive features
     X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip', 'is_federal_payday', 
                   'is_payday_weekend', 'is_friday_base', 'is_pre_holiday', 'is_post_holiday',
                   'is_valentines_period', 'is_lunar_new_year', 'is_pre_holiday_friday',
-                  'competitor_overflow_index', 'overflow_weekend']]
+                  'lag_1', 'lag_7']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
+    
+    # Calculate MAE
+    mae = (y - ols_model.predict(X)).abs().mean()
     
     # --- ACTUAL VS PREDICTED (Recent Days) ---
     st.subheader("🎯 Model Performance: Actual vs Predicted")
@@ -204,8 +199,8 @@ try:
             (ols_model.params['is_valentines_period'] * recent_df['is_valentines_period']) +
             (ols_model.params['is_lunar_new_year'] * recent_df['is_lunar_new_year']) +
             (ols_model.params['is_pre_holiday_friday'] * recent_df['is_pre_holiday_friday']) +
-            (ols_model.params['competitor_overflow_index'] * recent_df['competitor_overflow_index']) +
-            (ols_model.params['overflow_weekend'] * recent_df['overflow_weekend'])
+            (ols_model.params['lag_1'] * recent_df['lag_1']) +
+            (ols_model.params['lag_7'] * recent_df['lag_7'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -278,8 +273,8 @@ try:
         'is_valentines_period': "Valentine's Period (Feb 13-15)",
         'is_lunar_new_year': 'Lunar New Year (3-day window)',
         'is_pre_holiday_friday': 'Pre-Holiday × Friday (interaction)',
-        'competitor_overflow_index': 'Competitor Overflow Index (per competitor closed)',
-        'overflow_weekend': 'Overflow × Weekend (interaction)'
+        'lag_1': 'Lag 1 (Previous Day Sales)',
+        'lag_7': 'Lag 7 (7 Days Ago Sales)'
     }
     
     for var in params.index:
@@ -307,18 +302,20 @@ try:
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
     
     # Model statistics
-    stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
+    stats_col1, stats_col2, stats_col3, stats_col4, stats_col5 = st.columns(5)
     with stats_col1:
         st.metric("R²", f"{ols_model.rsquared:.4f}")
     with stats_col2:
         st.metric("Adj. R²", f"{ols_model.rsquared_adj:.4f}")
     with stats_col3:
-        st.metric("F-statistic", f"{ols_model.fvalue:.2f}")
+        st.metric("MAE", f"{mae:.2f}")
     with stats_col4:
+        st.metric("F-statistic", f"{ols_model.fvalue:.2f}")
+    with stats_col5:
         st.metric("Prob(F)", f"{ols_model.f_pvalue:.4f}")
     
     st.caption("Significance codes: *** p<0.001, ** p<0.01, * p<0.05, . p<0.10")
-    st.caption(f"Observations: {int(ols_model.nobs)} | Residual Std. Error: {np.sqrt(ols_model.mse_resid):.3f}")
+    st.caption(f"Observations: {int(ols_model.nobs)} | Residual Std. Error: {np.sqrt(ols_model.mse_resid):.3f} | MAE: Mean Absolute Error")
     
     st.divider()
 
@@ -352,7 +349,7 @@ try:
                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     st.plotly_chart(fig, use_container_width=True)
     
-    st.caption("📊 Baseline relationships shown. Full model includes 13 features: Temp, Weekend(Sat/Sun), Mixed Precip, Fed Payday, Payday Weekend, Friday Base, Pre/Post-Holiday, Valentine's, Lunar NY, Pre-Holiday×Friday, Competitor Overflow Index, and Overflow×Weekend interaction.")
+    st.caption("📊 Baseline relationships shown. Full autoregressive model includes 13 features: Temp, Weekend(Sat/Sun), Mixed Precip, Fed Payday, Payday Weekend, Friday Base, Pre/Post-Holiday, Valentine's, Lunar NY, Pre-Holiday×Friday, lag_1 (previous day), and lag_7 (7 days ago).")
 
 except Exception as e:
     st.error(f"Model Diagnostics Error: {e}")
