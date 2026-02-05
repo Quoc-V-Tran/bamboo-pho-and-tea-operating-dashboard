@@ -83,11 +83,8 @@ try:
     # Weekend binary
     merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
     
-    # Season dummies (Winter = reference)
-    merged['month'] = pd.to_datetime(merged['Date']).dt.month
-    merged['is_spring'] = merged['month'].isin([3, 4, 5]).astype(int)
-    merged['is_summer'] = merged['month'].isin([6, 7, 8]).astype(int)
-    merged['is_fall'] = merged['month'].isin([9, 10, 11]).astype(int)
+    # Mixed precipitation (only significant precipitation type)
+    merged['is_mixed_precip'] = (merged['Precip_Type'] == 'Mixed').astype(int)
     
     # Prepare model data
     model_df = merged[
@@ -95,19 +92,12 @@ try:
         (merged['Bowls_Sold'] > 0)
     ].copy()
     
-    # Precipitation type dummies (Clear = reference)
-    model_df['is_rain'] = (model_df['Precip_Type'] == 'Rain').astype(int)
-    model_df['is_snow'] = (model_df['Precip_Type'] == 'Snow').astype(int)
-    model_df['is_heavy_snow'] = (model_df['Precip_Type'] == 'Heavy Snow').astype(int)
-    model_df['is_mixed'] = (model_df['Precip_Type'] == 'Mixed').astype(int)
-    model_df['is_flurries'] = (model_df['Precip_Type'] == 'Flurries').astype(int)
-    
     # Center temperature
     mean_temp = model_df['Temp_High'].mean()
     model_df['Temp_Centered'] = model_df['Temp_High'] - mean_temp
     
-    # Run OLS regression with weekend + precipitation types + seasons
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_heavy_snow', 'is_mixed', 'is_flurries', 'is_spring', 'is_summer', 'is_fall']]
+    # Run parsimonious OLS regression (only significant features)
+    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip']]
     y = model_df['Bowls_Sold']
     X = sm.add_constant(X)
     ols_model = sm.OLS(y, X).fit()
@@ -125,14 +115,7 @@ try:
             ols_model.params['const'] + 
             (ols_model.params['Temp_Centered'] * recent_df['Temp_Centered']) +
             (ols_model.params['is_weekend'] * recent_df['is_weekend']) +
-            (ols_model.params['is_rain'] * recent_df['is_rain']) +
-            (ols_model.params['is_snow'] * recent_df['is_snow']) +
-            (ols_model.params['is_heavy_snow'] * recent_df['is_heavy_snow']) +
-            (ols_model.params['is_mixed'] * recent_df['is_mixed']) +
-            (ols_model.params['is_flurries'] * recent_df['is_flurries']) +
-            (ols_model.params['is_spring'] * recent_df['is_spring']) +
-            (ols_model.params['is_summer'] * recent_df['is_summer']) +
-            (ols_model.params['is_fall'] * recent_df['is_fall'])
+            (ols_model.params['is_mixed_precip'] * recent_df['is_mixed_precip'])
         )
         
         recent_df['Error'] = recent_df['Bowls_Sold'] - recent_df['Predicted']
@@ -193,17 +176,10 @@ try:
     
     # Format variable names
     var_names = {
-        'const': f'Intercept (Midweek, Clear, Winter, {mean_temp:.1f}°F)',
+        'const': f'Intercept (Midweek, No Mixed Precip, {mean_temp:.1f}°F)',
         'Temp_Centered': 'Temperature (centered)',
         'is_weekend': 'Weekend (Fri/Sat/Sun)',
-        'is_rain': 'Rain (vs Clear)',
-        'is_snow': 'Snow (vs Clear)',
-        'is_heavy_snow': 'Heavy Snow (vs Clear)',
-        'is_mixed': 'Mixed (vs Clear)',
-        'is_flurries': 'Flurries (vs Clear)',
-        'is_spring': 'Spring (vs Winter)',
-        'is_summer': 'Summer (vs Winter)',
-        'is_fall': 'Fall (vs Winter)'
+        'is_mixed_precip': 'Mixed Precipitation'
     }
     
     for var in params.index:
@@ -246,46 +222,37 @@ try:
     
     st.divider()
 
-    # --- SCATTER PLOT WITH REGRESSION LINES BY PRECIPITATION ---
-    st.subheader("🌡️ Temperature vs Bowls Sold by Precipitation Type")
+    # --- SCATTER PLOT WITH REGRESSION LINES ---
+    st.subheader("🌡️ Temperature vs Bowls Sold")
     
-    # Create scatter plot colored by precipitation type
-    fig = px.scatter(model_df, x='Temp_High', y='Bowls_Sold', color='Precip_Type',
-                     color_discrete_map={
-                         'Clear': '#87CEEB',
-                         'Rain': '#4682B4',
-                         'Snow': '#B0E0E6',
-                         'Heavy Snow': '#00008B',
-                         'Mixed': '#9370DB',
-                         'Flurries': '#E6E6FA'
-                     },
-                     hover_data=['Date', 'Day_of_Week'],
+    # Create scatter plot colored by weekend vs midweek
+    model_df['Day_Type'] = model_df['is_weekend'].apply(lambda x: 'Weekend' if x == 1 else 'Midweek')
+    
+    fig = px.scatter(model_df, x='Temp_High', y='Bowls_Sold', color='Day_Type',
+                     color_discrete_map={'Weekend': '#DAA520', 'Midweek': '#1E88E5'},
+                     hover_data=['Date', 'Day_of_Week', 'Precip_Type'],
                      labels={'Temp_High': 'Temperature (°F)', 'Bowls_Sold': 'Bowls Sold'})
     
-    # Regression Lines for each precipitation type (assuming midweek)
+    # Regression Lines
     temp_range = np.linspace(model_df['Temp_High'].min(), model_df['Temp_High'].max(), 100)
     temp_range_centered = temp_range - mean_temp
     
-    precip_types = [
-        ('Clear', 0, '#87CEEB', 'solid'),
-        ('Rain', ols_model.params['is_rain'], '#4682B4', 'dash'),
-        ('Snow', ols_model.params['is_snow'], '#B0E0E6', 'dot'),
-        ('Heavy Snow', ols_model.params['is_heavy_snow'], '#00008B', 'dashdot'),
-        ('Mixed', ols_model.params['is_mixed'], '#9370DB', 'solid'),
-        ('Flurries', ols_model.params['is_flurries'], '#E6E6FA', 'dash')
-    ]
+    # Weekend line (no mixed precip)
+    y_weekend = ols_model.params['const'] + (ols_model.params['Temp_Centered'] * temp_range_centered) + ols_model.params['is_weekend']
+    # Midweek line (no mixed precip)
+    y_midweek = ols_model.params['const'] + (ols_model.params['Temp_Centered'] * temp_range_centered)
     
-    for precip_name, precip_effect, color, dash_style in precip_types:
-        y_precip = ols_model.params['const'] + (ols_model.params['Temp_Centered'] * temp_range_centered) + precip_effect
-        fig.add_trace(go.Scatter(x=temp_range, y=y_precip, name=f'{precip_name} Trend',
-                                line=dict(color=color, width=3, dash=dash_style), mode='lines'))
+    fig.add_trace(go.Scatter(x=temp_range, y=y_weekend, name='Weekend Trend',
+                            line=dict(color='#DAA520', width=4), mode='lines'))
+    fig.add_trace(go.Scatter(x=temp_range, y=y_midweek, name='Midweek Trend',
+                            line=dict(color='#1E88E5', width=4, dash='dash'), mode='lines'))
     
     fig.update_traces(marker=dict(size=10, opacity=0.6))
     fig.update_layout(template="simple_white", hovermode="closest",
                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
     st.plotly_chart(fig, use_container_width=True)
     
-    st.caption("📊 Parallel lines show how each precipitation type affects sales (controlling for temperature and day of week)")
+    st.caption("📊 Simple, parsimonious model with only 3 predictors (all highly significant)")
 
 except Exception as e:
     st.error(f"Model Diagnostics Error: {e}")

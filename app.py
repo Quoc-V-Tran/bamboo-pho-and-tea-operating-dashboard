@@ -77,25 +77,14 @@ try:
     # Weekend binary (Friday, Saturday, Sunday)
     merged['is_weekend'] = merged['Day_of_Week'].isin(['Friday', 'Saturday', 'Sunday']).astype(int)
     
-    # Season dummies (Winter = reference: Dec, Jan, Feb)
-    merged['month'] = pd.to_datetime(merged['Date']).dt.month
-    merged['is_spring'] = merged['month'].isin([3, 4, 5]).astype(int)  # Mar, Apr, May
-    merged['is_summer'] = merged['month'].isin([6, 7, 8]).astype(int)  # Jun, Jul, Aug
-    merged['is_fall'] = merged['month'].isin([9, 10, 11]).astype(int)  # Sep, Oct, Nov
-    # Winter (Dec=12, Jan=1, Feb=2) is reference = 0
+    # Mixed precipitation dummy (only significant precipitation type)
+    merged['is_mixed_precip'] = (merged['Precip_Type'] == 'Mixed').astype(int)
     
     # Filter for active days only (Exclude Mondays/zeros)
     model_df = merged[
         (merged['Day_of_Week'] != 'Monday') & 
         (merged['Bowls_Sold'] > 0)
     ].copy()
-    
-    # Precipitation type dummies (Clear = reference category)
-    model_df['is_rain'] = (model_df['Precip_Type'] == 'Rain').astype(int)
-    model_df['is_snow'] = (model_df['Precip_Type'] == 'Snow').astype(int)
-    model_df['is_heavy_snow'] = (model_df['Precip_Type'] == 'Heavy Snow').astype(int)
-    model_df['is_mixed'] = (model_df['Precip_Type'] == 'Mixed').astype(int)
-    model_df['is_flurries'] = (model_df['Precip_Type'] == 'Flurries').astype(int)
     
     # Center temperature variable (subtract mean)
     mean_temp = model_df['Temp_High'].mean()
@@ -110,13 +99,17 @@ try:
     total_closed = len(merged[merged['Bowls_Sold'] == 0])
     st.info(f"📊 Analyzing data from **{date_min}** to **{date_max}** • **{total_days}** operating days • **{total_closed}** closed days excluded (Mondays, holidays, weather closures)")
 
-    # --- BUILD MODEL WITH WEEKEND + PRECIPITATION TYPES + SEASONS ---
-    # Bowls_Sold ~ Intercept + Temp_Centered + is_weekend + Precipitation_Types + Seasons
-    # Note: Clear weather and Winter are reference categories
-    X = model_df[['Temp_Centered', 'is_weekend', 'is_rain', 'is_snow', 'is_heavy_snow', 'is_mixed', 'is_flurries', 'is_spring', 'is_summer', 'is_fall']]
+    # --- BUILD PARSIMONIOUS MODEL (ONLY SIGNIFICANT FEATURES) ---
+    # Bowls_Sold ~ Intercept + Temp_Centered + is_weekend + is_mixed_precip
+    X = model_df[['Temp_Centered', 'is_weekend', 'is_mixed_precip']]
     X = sm.add_constant(X) 
     y = model_df['Bowls_Sold']
     ols_model = sm.OLS(y, X).fit()
+    
+    # Calculate predictions for all historical data
+    model_df['Predicted'] = ols_model.predict(X)
+    model_df['Error'] = model_df['Bowls_Sold'] - model_df['Predicted']
+    model_df['Error_Pct'] = (model_df['Error'] / model_df['Bowls_Sold'] * 100).abs()
 
     # --- TOMORROW'S PREDICTION (Top Section) ---
     st.header("📅 Tomorrow's Forecast")
@@ -127,70 +120,47 @@ try:
         st.subheader("Enter Tomorrow's Forecast")
         tomorrow_temp = st.number_input("Temperature (°F)", min_value=0, max_value=100, value=35, step=1)
         tomorrow_is_weekend = st.checkbox("Weekend Day (Fri-Sun)", value=False)
-        tomorrow_precip = st.selectbox("Precipitation Type", 
-                                      ["Clear", "Rain", "Snow", "Heavy Snow", "Mixed", "Flurries"],
-                                      index=0)
-        tomorrow_season = st.selectbox("Season",
-                                      ["Winter", "Spring", "Summer", "Fall"],
-                                      index=0)  # Default to Winter
+        tomorrow_is_mixed = st.checkbox("Mixed Precipitation", value=False)
         
         # Center tomorrow's temperature
         tomorrow_temp_centered = tomorrow_temp - mean_temp
         
-        # Calculate precipitation effect
-        precip_effect = 0
-        if tomorrow_precip == "Rain":
-            precip_effect = ols_model.params['is_rain']
-        elif tomorrow_precip == "Snow":
-            precip_effect = ols_model.params['is_snow']
-        elif tomorrow_precip == "Heavy Snow":
-            precip_effect = ols_model.params['is_heavy_snow']
-        elif tomorrow_precip == "Mixed":
-            precip_effect = ols_model.params['is_mixed']
-        elif tomorrow_precip == "Flurries":
-            precip_effect = ols_model.params['is_flurries']
-        # Clear = 0 (reference)
-        
-        # Calculate season effect
-        season_effect = 0
-        if tomorrow_season == "Spring":
-            season_effect = ols_model.params['is_spring']
-        elif tomorrow_season == "Summer":
-            season_effect = ols_model.params['is_summer']
-        elif tomorrow_season == "Fall":
-            season_effect = ols_model.params['is_fall']
-        # Winter = 0 (reference)
-        
         tomorrow_pred = (ols_model.params['const'] + 
                         (ols_model.params['Temp_Centered'] * tomorrow_temp_centered) + 
                         (ols_model.params['is_weekend'] * (1 if tomorrow_is_weekend else 0)) +
-                        precip_effect + season_effect)
+                        (ols_model.params['is_mixed_precip'] * (1 if tomorrow_is_mixed else 0)))
         
         st.metric("🔮 Predicted Bowls for Tomorrow", 
                  f"{int(max(0, tomorrow_pred))} Bowls",
-                 help=f"Full model: Temp + Weekend + Precip + Season (Mean temp: {mean_temp:.1f}°F)")
+                 help=f"Parsimonious model: Temp + Weekend + Mixed (Mean temp: {mean_temp:.1f}°F)")
     
     with pred_col2:
         st.subheader("📊 Historical Stats & Model Coefficients")
         
-        stat_col1, stat_col2, stat_col3 = st.columns(3)
+        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
         
         with stat_col1:
             avg_bowls = model_df['Bowls_Sold'].mean()
             st.metric("Avg Daily Bowls", f"{avg_bowls:.1f}")
-            st.metric("Total Bowls", f"{int(model_df['Bowls_Sold'].sum())}")
+            st.metric("Model R²", f"{ols_model.rsquared:.3f}",
+                     help="Proportion of variance explained")
         
         with stat_col2:
             st.metric("🌡️ Temp Effect", f"{ols_model.params['Temp_Centered']:.2f}/°F",
-                     help="Colder weather = More pho!")
-            st.metric("📅 Weekend Lift", f"+{ols_model.params['is_weekend']:.1f} bowls",
+                     help="Colder = More sales")
+            st.metric("📅 Weekend Lift", f"+{ols_model.params['is_weekend']:.1f}",
                      help="Fri/Sat/Sun boost")
         
         with stat_col3:
-            st.metric("Model R²", f"{ols_model.rsquared:.3f}",
-                     help="Proportion of variance explained")
-            st.metric("Adj. R²", f"{ols_model.rsquared_adj:.3f}",
-                     help="Adjusted for # of predictors")
+            st.metric("🌧️ Mixed Precip", f"+{ols_model.params['is_mixed_precip']:.1f}",
+                     help="Mixed weather boost")
+            avg_error_pct = model_df['Error_Pct'].mean()
+            st.metric("Avg Error %", f"{avg_error_pct:.1f}%",
+                     help="Average absolute % error")
+        
+        with stat_col4:
+            st.metric("Total Bowls", f"{int(model_df['Bowls_Sold'].sum())}")
+            st.metric("Observations", f"{int(ols_model.nobs)}")
 
     st.divider()
     
@@ -217,6 +187,80 @@ try:
         legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
     )
     st.plotly_chart(fig_line, use_container_width=True)
+    
+    st.divider()
+    
+    # --- ACTUAL VS PREDICTED (ALL HISTORICAL DATA) ---
+    st.subheader("📈 Model Fit: Actual vs Predicted Bowls")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Scatter plot: Actual vs Predicted
+        fig_scatter = go.Figure()
+        
+        # Add scatter points colored by error percentage
+        fig_scatter.add_trace(go.Scatter(
+            x=model_df['Predicted'],
+            y=model_df['Bowls_Sold'],
+            mode='markers',
+            marker=dict(
+                size=8,
+                color=model_df['Error_Pct'],
+                colorscale='RdYlGn_r',  # Red = high error, Green = low error
+                showscale=True,
+                colorbar=dict(title="Error %"),
+                line=dict(width=0.5, color='white')
+            ),
+            text=[f"Date: {d}<br>Actual: {a:.0f}<br>Predicted: {p:.0f}<br>Error: {e:.1f}%" 
+                  for d, a, p, e in zip(model_df['Date'], model_df['Bowls_Sold'], 
+                                       model_df['Predicted'], model_df['Error_Pct'])],
+            hovertemplate='%{text}<extra></extra>',
+            name='Data Points'
+        ))
+        
+        # Add perfect prediction line (y = x)
+        min_val = min(model_df['Predicted'].min(), model_df['Bowls_Sold'].min())
+        max_val = max(model_df['Predicted'].max(), model_df['Bowls_Sold'].max())
+        fig_scatter.add_trace(go.Scatter(
+            x=[min_val, max_val],
+            y=[min_val, max_val],
+            mode='lines',
+            line=dict(color='black', width=2, dash='dash'),
+            name='Perfect Fit (y=x)'
+        ))
+        
+        fig_scatter.update_layout(
+            xaxis_title='Predicted Bowls',
+            yaxis_title='Actual Bowls',
+            template='simple_white',
+            hovermode='closest',
+            height=500
+        )
+        
+        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.caption("📊 Points on the diagonal line = perfect predictions. Color shows error magnitude.")
+    
+    with col2:
+        st.markdown("### Model Performance")
+        
+        # Error distribution
+        within_5pct = (model_df['Error_Pct'] <= 5).sum()
+        within_10pct = (model_df['Error_Pct'] <= 10).sum()
+        within_20pct = (model_df['Error_Pct'] <= 20).sum()
+        total = len(model_df)
+        
+        st.metric("Within 5% Error", f"{within_5pct} days ({100*within_5pct/total:.0f}%)")
+        st.metric("Within 10% Error", f"{within_10pct} days ({100*within_10pct/total:.0f}%)")
+        st.metric("Within 20% Error", f"{within_20pct} days ({100*within_20pct/total:.0f}%)")
+        
+        st.markdown("---")
+        
+        mae = model_df['Error'].abs().mean()
+        st.metric("Mean Absolute Error", f"{mae:.1f} bowls")
+        
+        st.metric("RMSE", f"{np.sqrt(ols_model.mse_resid):.1f} bowls",
+                 help="Root Mean Squared Error")
     
     st.divider()
     # --- TOP 10 DISHES SOLD ---
