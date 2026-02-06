@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -6,66 +7,61 @@ import numpy as np
 import statsmodels.api as sm
 import pytz
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _path(fname):
+    p = os.path.join(BASE_DIR, fname)
+    if os.path.exists(p):
+        return p
+    doc = os.path.join(os.path.expanduser("~"), "Documents", "moms-dashboard", fname)
+    return doc if os.path.exists(doc) else p
+
 st.set_page_config(page_title="Daily Insights", layout="wide")
 
 @st.cache_data
 def load_all_data():
-    # Load and adjust timezone - combining 2024, 2025, and 2026 data
     pt_tz, et_tz = pytz.timezone('US/Pacific'), pytz.timezone('US/Eastern')
-    
-    # Load 2024 sales data
-    df_2024 = pd.read_csv('2024_Bamboo_Data.csv')
-    df_2024['Datetime_PT'] = pd.to_datetime(df_2024['Date'] + ' ' + df_2024['Time'])
-    df_2024['Datetime_ET'] = df_2024['Datetime_PT'].dt.tz_localize(pt_tz).dt.tz_convert(et_tz)
-    df_2024['Date'] = df_2024['Datetime_ET'].dt.date
-    df_2024['Day_of_Week'] = df_2024['Datetime_ET'].dt.day_name()
-    df_2024['Gross Sales'] = df_2024['Gross Sales'].replace(r'[\$,]', '', regex=True).astype(float)
-    df_2024['Qty'] = pd.to_numeric(df_2024['Qty'], errors='coerce').fillna(0)
-    
-    # Load 2025 sales data
-    df_2025 = pd.read_csv('2025_Bamboo_Data.csv')
-    df_2025['Datetime_PT'] = pd.to_datetime(df_2025['Date'] + ' ' + df_2025['Time'])
-    df_2025['Datetime_ET'] = df_2025['Datetime_PT'].dt.tz_localize(pt_tz).dt.tz_convert(et_tz)
-    df_2025['Date'] = df_2025['Datetime_ET'].dt.date
-    df_2025['Day_of_Week'] = df_2025['Datetime_ET'].dt.day_name()
-    df_2025['Gross Sales'] = df_2025['Gross Sales'].replace(r'[\$,]', '', regex=True).astype(float)
-    df_2025['Qty'] = pd.to_numeric(df_2025['Qty'], errors='coerce').fillna(0)
-    
-    # Load Jan 2026 sales data
-    df_jan_2026 = pd.read_csv('Jan_2026_Bamboo_Data.csv')
-    df_jan_2026['Datetime_PT'] = pd.to_datetime(df_jan_2026['Date'] + ' ' + df_jan_2026['Time'])
-    df_jan_2026['Datetime_ET'] = df_jan_2026['Datetime_PT'].dt.tz_localize(pt_tz).dt.tz_convert(et_tz)
-    df_jan_2026['Date'] = df_jan_2026['Datetime_ET'].dt.date
-    df_jan_2026['Day_of_Week'] = df_jan_2026['Datetime_ET'].dt.day_name()
-    df_jan_2026['Gross Sales'] = df_jan_2026['Gross Sales'].replace(r'[\$,]', '', regex=True).astype(float)
-    df_jan_2026['Qty'] = pd.to_numeric(df_jan_2026['Qty'], errors='coerce').fillna(0)
-    
-    # Load Feb 2026 sales data (Feb 1-4)
-    df_feb_2026 = pd.read_csv('Feb 3 and 4 sales.csv')
-    df_feb_2026['Datetime_PT'] = pd.to_datetime(df_feb_2026['Date'] + ' ' + df_feb_2026['Time'])
-    df_feb_2026['Datetime_ET'] = df_feb_2026['Datetime_PT'].dt.tz_localize(pt_tz).dt.tz_convert(et_tz)
-    df_feb_2026['Date'] = df_feb_2026['Datetime_ET'].dt.date
-    df_feb_2026['Day_of_Week'] = df_feb_2026['Datetime_ET'].dt.day_name()
-    df_feb_2026['Gross Sales'] = df_feb_2026['Gross Sales'].replace(r'[\$,]', '', regex=True).astype(float)
-    df_feb_2026['Qty'] = pd.to_numeric(df_feb_2026['Qty'], errors='coerce').fillna(0)
-    
-    # Combine sales data
-    df = pd.concat([df_2024, df_2025, df_jan_2026, df_feb_2026], ignore_index=True)
-    
-    # Load 2024 weather data (preprocessed)
-    weather_2024 = pd.read_csv('camp_hill_2024_weather_processed.csv')
+
+    def process_sales(df_raw):
+        df_raw['Datetime_PT'] = pd.to_datetime(df_raw['Date'] + ' ' + df_raw['Time'])
+        df_raw['Datetime_ET'] = df_raw['Datetime_PT'].dt.tz_localize(pt_tz).dt.tz_convert(et_tz)
+        df_raw['Date'] = df_raw['Datetime_ET'].dt.date
+        df_raw['Day_of_Week'] = df_raw['Datetime_ET'].dt.day_name()
+        df_raw['Gross Sales'] = df_raw['Gross Sales'].replace(r'[\$,]', '', regex=True).astype(float)
+        df_raw['Qty'] = pd.to_numeric(df_raw['Qty'], errors='coerce').fillna(0)
+        return df_raw
+
+    sales_dfs = []
+    for f in ['2024_Bamboo_Data.csv', '2025_Bamboo_Data.csv']:
+        p = _path(f)
+        if os.path.exists(p):
+            sales_dfs.append(process_sales(pd.read_csv(p)))
+        else:
+            st.sidebar.warning(f"⚠️ Missing: {f} (optional on cloud)")
+    for f in ['Jan_2026_Bamboo_Data.csv', 'Feb 3 and 4 sales.csv']:
+        p = _path(f)
+        if os.path.exists(p):
+            sales_dfs.append(process_sales(pd.read_csv(p)))
+        else:
+            raise FileNotFoundError(f"Required file missing: {f}")
+
+    if not sales_dfs:
+        raise FileNotFoundError("No sales data found.")
+    df = pd.concat(sales_dfs, ignore_index=True)
+
+    weather_2024 = pd.read_csv(_path('camp_hill_2024_weather_processed.csv'))
     weather_2024['Date'] = pd.to_datetime(weather_2024['Date']).dt.date
     
     # Load 2025 weather data
-    weather_2025 = pd.read_csv('camp_hill_2025_weather.csv')
+    weather_2025 = pd.read_csv(_path('camp_hill_2025_weather.csv'))
     weather_2025['Date'] = pd.to_datetime(weather_2025['Date']).dt.date
     
     # Load Jan 2026 weather data
-    weather_jan_2026 = pd.read_csv('jan_weather.csv')
+    weather_jan_2026 = pd.read_csv(_path('jan_weather.csv'))
     weather_jan_2026['Date'] = pd.to_datetime(weather_jan_2026['Date']).dt.date
     
     # Load Feb 2026 weather data
-    weather_feb_2026 = pd.read_csv('feb_weather.csv')
+    weather_feb_2026 = pd.read_csv(_path('feb_weather.csv'))
     # Fix column names (handle spaces)
     weather_feb_2026.columns = weather_feb_2026.columns.str.replace(' ', '_')
     # Clean temperature values (remove °F suffix)
