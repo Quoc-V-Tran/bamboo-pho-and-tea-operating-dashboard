@@ -44,20 +44,33 @@ def load_all_data():
                     return alt
         return p
 
-    # Load 2024 sales data (required: project folder or Extreme SSD)
-    df_2024 = process_sales(pd.read_csv(_path('2024_Bamboo_Data.csv')))
+    sales_dfs = []
+    # Load 2024 sales data (optional on Streamlit Cloud; required locally)
+    try:
+        df_2024 = process_sales(pd.read_csv(_path('2024_Bamboo_Data.csv')))
+        sales_dfs.append(df_2024)
+    except (FileNotFoundError, OSError):
+        pass
 
-    # Load 2025 sales data (required: project folder or Extreme SSD)
-    df_2025 = process_sales(pd.read_csv(_path('2025_Bamboo_Data.csv')))
+    # Load 2025 sales data (optional on Streamlit Cloud; required locally)
+    try:
+        df_2025 = process_sales(pd.read_csv(_path('2025_Bamboo_Data.csv')))
+        sales_dfs.append(df_2025)
+    except (FileNotFoundError, OSError):
+        pass
 
     # Load Jan 2026 sales data
     df_jan_2026 = process_sales(pd.read_csv(os.path.join(BASE_DIR, 'Jan_2026_Bamboo_Data.csv')))
+    sales_dfs.append(df_jan_2026)
 
     # Load Feb 2026 sales data (Feb 1-4)
     df_feb_2026 = process_sales(pd.read_csv(os.path.join(BASE_DIR, 'Feb 3 and 4 sales.csv')))
+    sales_dfs.append(df_feb_2026)
 
     # Combine sales data
-    df = pd.concat([df_2024, df_2025, df_jan_2026, df_feb_2026], ignore_index=True)
+    if not sales_dfs:
+        raise FileNotFoundError("No sales data. Need Jan_2026_Bamboo_Data.csv and Feb 3 and 4 sales.csv.")
+    df = pd.concat(sales_dfs, ignore_index=True)
     
     # Load 2024 weather data (preprocessed)
     weather_2024 = pd.read_csv(os.path.join(BASE_DIR, 'camp_hill_2024_weather_processed.csv'))
